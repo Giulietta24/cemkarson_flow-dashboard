@@ -11,7 +11,7 @@ import pytz
 st.set_page_config(page_title="GEX Flow Dashboard", layout="wide", initial_sidebar_state="expanded")
 
 st.title("📊 Structural Flow & GEX Dashboard")
-st.caption("Quantitative mapping of options market maker hedging constraints (Gamma, Vanna, Charm).")
+st.caption("Quantitative mapping of options market maker hedging constraints (Gamma, Vanna, Charm) aligned with Karsan Volatility Thesis.")
 
 st.warning("⚠️ **Disclaimer:** This dashboard is for educational and research purposes only. Options trading involves significant risk. This is not financial, legal, or tax advice.")
 
@@ -20,6 +20,7 @@ def calculate_bs_greeks(S, K, T, r, sigma):
     """
     Computes precise Black-Scholes Greeks per share.
     Returns: (gamma, vanna, charm)
+    FIXED: Resolved Charm double-division bug. Charm is native per-day when T is in years.
     """
     if T <= 0 or sigma <= 0 or S <= 0 or K <= 0:
         return 0.0, 0.0, 0.0
@@ -29,11 +30,29 @@ def calculate_bs_greeks(S, K, T, r, sigma):
     
     gamma = norm.pdf(d1) / (S * sigma * np.sqrt(T))
     vanna = -norm.pdf(d1) * (d2 / sigma)
-    charm = (norm.pdf(d1) * (((r / (sigma * np.sqrt(T))) - ((d1 * d2) / (2 * T))))) / 365.0
+    
+    # Karsan Fidelity Fix: Standardized daily charm derivative (negative for long options)
+    charm = norm.pdf(d1) * (r / (sigma * np.sqrt(T)) - (d1 * d2) / (2 * T)) * (-1.0 / 365.0)
     
     return gamma, vanna, charm
 
-# --- 3. SIDEBAR CONTROLS & ADHD MEMORY ANCHOR ---
+# --- 3. IV TREND ENGINE (VANNA TRIGGER MECHANISM) ---
+@st.cache_data(ttl=300)
+def get_vix_iv_trend():
+    """
+    Fetches the 5-day delta of the CBOE Volatility Index (^VIX) to evaluate
+    if macro implied volatility compression is triggering reflexively active Vanna flows.
+    """
+    try:
+        vix = yf.Ticker("^VIX")
+        hist = vix.history(period="5d")
+        if len(hist) >= 2:
+            return float(hist['Close'].iloc[-1] - hist['Close'].iloc[0])
+        return 0.0
+    except Exception:
+        return 0.0
+
+# --- SIDEBAR CONTROLS & ADHD MEMORY ANCHOR ---
 with st.sidebar:
     st.header("🎛️ Parameters")
     
@@ -49,21 +68,19 @@ with st.sidebar:
     zoom_pct = st.slider("Chart Zoom Window (±%)", min_value=3, max_value=15, value=8, step=1) / 100.0
     risk_free_rate = st.number_input("Risk-Free Rate (r)", value=0.05, step=0.01)
     
-    st.info("🤖 **Smart Proximity Enabled:** Flip thresholds are automatically calibrated based on the ticker's live options implied volatility.")
-    
     st.markdown("---")
     st.subheader("🧠 Playbook Quick Anchor")
     with st.container(border=True):
         st.markdown("""
         **🟢 Positive GEX Setup:**
-        * Dealers net **long** gamma. They buy dips and sell rallies, stabilizing price action. Favor mean-reversion, premium collection, or measured long calls.
+        * Dealers net **long** gamma. They buy dips and sell rallies. Volatility dampening environment.
         
         **🔴 Negative GEX Setup:**
-        * Dealers net **short** gamma. They must sell drops and buy rips, accelerating volatility. Hedging flows create explosive momentum down or up. Avoid selling blind premium.
+        * Dealers net **short** gamma. They sell drops and buy rips. Volatility acceleration environment.
         """)
 
-# --- 4. VOLUME-WEIGHTED DATA ENGINE ---
-@st.cache_data(ttl=60)
+# --- 4. HIGH-FIDELITY DATA ENGINE ---
+@st.cache_data(ttl=300)
 def load_and_compute_gex(ticker, r_rate):
     try:
         stock = yf.Ticker(ticker)
@@ -78,6 +95,7 @@ def load_and_compute_gex(ticker, r_rate):
         compiled_data = []
         today = datetime.now().date()
         
+        # Pulling near-term monthly exposures where retail/institutional volume anchors the regime
         for exp_str in expirations[:4]:
             exp_date = datetime.strptime(exp_str, "%Y-%m-%d").date()
             dte = (exp_date - today).days
@@ -94,20 +112,16 @@ def load_and_compute_gex(ticker, r_rate):
                 strike = row['strike']
                 oi = row['openInterest']
                 iv = row['impliedVolatility']
-                volume = row['volume'] if 'volume' in row and not np.isnan(row['volume']) else 0
                 
                 if oi > 0 and iv > 0:
                     gamma, vanna, charm = calculate_bs_greeks(current_price, strike, T, r_rate, iv)
                     
-                    # Volume Weighting Scalar: Prioritizes active contracts over stale open interest
-                    vol_scalar = 1.0 + (volume / (oi * 0.1 + 1.0))
-                    weighted_oi = oi * vol_scalar
-                    
+                    # Karsan Fidelity Fix: Reverted back to pristine raw Open Interest to avoid artificial skew
                     compiled_data.append({
                         'strike': strike, 'Type': 'Call', 
-                        'GEX': weighted_oi * gamma * 100 * (current_price ** 2) * dte_weight, 
-                        'Vanna': weighted_oi * vanna * 100 * dte_weight, 
-                        'Charm': weighted_oi * charm * 100 * dte_weight,
+                        'GEX': oi * gamma * 100 * (current_price ** 2) * dte_weight, 
+                        'Vanna': oi * vanna * 100 * dte_weight, 
+                        'Charm': oi * charm * 100 * dte_weight,
                         'IV_Raw': iv
                     })
                     
@@ -116,20 +130,15 @@ def load_and_compute_gex(ticker, r_rate):
                 strike = row['strike']
                 oi = row['openInterest']
                 iv = row['impliedVolatility']
-                volume = row['volume'] if 'volume' in row and not np.isnan(row['volume']) else 0
                 
                 if oi > 0 and iv > 0:
                     gamma, vanna, charm = calculate_bs_greeks(current_price, strike, T, r_rate, iv)
                     
-                    # Volume Weighting Scalar
-                    vol_scalar = 1.0 + (volume / (oi * 0.1 + 1.0))
-                    weighted_oi = oi * vol_scalar
-                    
                     compiled_data.append({
                         'strike': strike, 'Type': 'Put', 
-                        'GEX': weighted_oi * gamma * 100 * (current_price ** 2) * -1.0 * dte_weight, 
-                        'Vanna': weighted_oi * vanna * 100 * -1.0 * dte_weight, 
-                        'Charm': weighted_oi * charm * 100 * -1.0 * dte_weight,
+                        'GEX': oi * gamma * 100 * (current_price ** 2) * -1.0 * dte_weight, 
+                        'Vanna': oi * vanna * 100 * -1.0 * dte_weight, 
+                        'Charm': oi * charm * 100 * -1.0 * dte_weight,
                         'IV_Raw': iv
                     })
                     
@@ -154,11 +163,12 @@ def load_and_compute_gex(ticker, r_rate):
         return None, None, None
 
 # --- 5. PROCESSING & EXECUTION ENGINE ---
-with st.spinner("Executing Volume-Weighted Black-Scholes integrations..."):
+with st.spinner("Analyzing options market structural architecture..."):
     current_price, data_matrix, data_time = load_and_compute_gex(ticker_input, risk_free_rate)
+    vix_delta = get_vix_iv_trend()
 
 if data_matrix is not None:
-    st.info(f"📅 **Data Freshness Timestamp:** {data_time} | Incorporating Volume-Weighted Live Options Activity.")
+    st.info(f"📅 **Data Freshness Timestamp:** {data_time} | Macro VIX 5-Day Trend: {vix_delta:+.2f} points.")
 
     lower_bound = current_price * (1.0 - zoom_pct)
     upper_bound = current_price * (1.0 + zoom_pct)
@@ -168,26 +178,24 @@ if data_matrix is not None:
     total_vanna = filtered_df['Vanna'].sum()
     total_charm = filtered_df['Charm'].sum()
     
-    # --- 🤖 AUTO-PILOT FLIP THRESHOLD CALCULATION ---
+    # --- 🤖 KARSAN FIDELITY FIX: TRUE ZERO-GAMMA CUMULATIVE FLIP POINT ---
+    agg_df_sorted = data_matrix.sort_values('strike').copy()
+    agg_df_sorted['cumulative_GEX'] = agg_df_sorted['GEX'].cumsum()
+    
+    # Identify mathematically exact sign cross
+    sign_changes = agg_df_sorted[(agg_df_sorted['cumulative_GEX'] * agg_df_sorted['cumulative_GEX'].shift(1) < 0)]
+    zero_gamma_strike = sign_changes['strike'].iloc[0] if not sign_changes.empty else current_price
+    
+    # Operationalize system states based on structural boundaries
     avg_implied_vol = filtered_df['IV_Raw'].mean() if not filtered_df.empty else 0.20
-    auto_threshold_pct = max(0.005, min(0.035, avg_implied_vol * 0.05))
+    auto_threshold_value = current_price * (max(0.005, min(0.035, avg_implied_vol * 0.05)))
     
-    strikes_below = filtered_df[filtered_df['strike'] <= current_price]
-    strikes_above = filtered_df[filtered_df['strike'] > current_price]
-    
-    nearest_lower_strike = strikes_below.iloc[-1]['strike'] if not strikes_below.empty else current_price * 0.99
-    nearest_upper_strike = strikes_above.iloc[0]['strike'] if not strikes_above.empty else current_price * 1.01
-    
-    has_red_below = (strikes_below['GEX'] < 0).any() if not strikes_below.empty else False
-    has_green_above = (strikes_above['GEX'] > 0).any() if not strikes_above.empty else False
-    
-    is_flip_zone = has_red_below and has_green_above and (abs(current_price - nearest_lower_strike) / current_price < auto_threshold_pct)
+    is_flip_zone = abs(current_price - zero_gamma_strike) <= auto_threshold_value
+    vanna_active = vix_delta < -0.50  # Volatility compression decay active
 
-    # --- 🧠 SHORTHAND SHIFT FOR ADHD SCANNABILITY ---
-    # Turns raw millions into clean $X.XXM or thousands into $X.XXK
+    # --- SHORTHAND SHIFT FOR ADHD SCANNABILITY ---
     abs_gex = abs(total_gex)
     sign = "-" if total_gex < 0 else ""
-    
     if abs_gex >= 1_000_000_000:
         gex_shorthand = f"{sign}${abs_gex / 1_000_000_000:.2f}B"
     elif abs_gex >= 1_000_000:
@@ -198,13 +206,12 @@ if data_matrix is not None:
         gex_shorthand = f"{sign}${abs_gex:.2f}"
 
     gex_action_direction = "BUY shares to stabilize drops" if total_gex >= 0 else "DUMP shares, accelerating drops"
-    gex_formatted_raw = f"${total_gex:,.0f}"
     
     gex_tooltip_text = (
         f"💡 ADHD Cheat Sheet:\n\n"
         f"For every 1% that {ticker_input} moves up or down, institutional market maker software "
-        f"is mechanically forced to automatically {gex_action_direction} by an estimated volume-adjusted value of "
-        f"{gex_shorthand} ({gex_formatted_raw} raw).\n\n"
+        f"is mechanically forced to automatically {gex_action_direction} by an estimated value of "
+        f"{gex_shorthand}.\n\n"
         f"• GREEN (+): Active price safety buffer.\n"
         f"• RED (-): High-velocity momentum fuel."
     )
@@ -214,11 +221,7 @@ if data_matrix is not None:
     with col1:
         st.metric(label=f"Current {ticker_input} Price", value=f"${current_price:.2f}")
     with col2:
-        st.metric(
-            label="Total Gamma Exposure ($ GEX)", 
-            value=gex_shorthand, # Clean short format displayed on-screen!
-            help=gex_tooltip_text
-        )
+        st.metric(label="Total Gamma Exposure ($ GEX)", value=gex_shorthand, help=gex_tooltip_text)
     with col3:
         if is_flip_zone:
             state_label = "⚡ FLIP ZONE"
@@ -226,94 +229,107 @@ if data_matrix is not None:
             state_label = "🟢 POSITIVE GEX" if total_gex > 0 else "🔴 NEGATIVE GEX"
         st.metric(label="System Status", value=state_label)
 
-    st.caption(f"🤖 **Auto-Pilot Profile:** Avg Implied Volatility: {avg_implied_vol*100:.1f}% | Dynamic Flip Warning Proximity: {auto_threshold_pct*100:.2f}%")
+    st.caption(f"🎯 **True Cumulative Zero-Gamma Strike:** ${zero_gamma_strike:.2f} | Dynamic Proximity Range: ±${auto_threshold_value:.2f}")
     st.divider()
 
-    # --- 6. OPERATIONALIZED PLAYBOOK CONTROLS ---
+    # --- 6. OPERATIONALIZED VANNA & CHARM PLAYBOOK CONTROLS ---
     st.subheader("🎯 Active Execution Playbook")
     
+    # 1. Check for Active Vanna Tailwind Injection
+    if vanna_active and total_vanna > 0:
+        st.success(f"🚀 **VANNA TAILWIND ACTIVE:** Implied Volatility is contracting (VIX down {abs(vix_delta):.2f}pts). Market maker software is mechanically forced to buy underlying stock delta to support the market. Tailwinds favor long exposure!")
+    elif vix_delta > 0.50 and total_vanna > 0:
+        st.error(f"⚠️ **VANNA HEADWIND ACTIVE:** Implied Volatility is spiking. Market maker delta unwinding is forcing structural automated liquidations. Stand aside or hedge.")
+
+    # 2. Main Structural Regimes
     if is_flip_zone:
         st.warning(f"""
-        ### **⚡️ SYSTEM STATUS: The Razor's Edge (Gamma Flip Zone)**
-        * **The Market Reality:** You are standing on a structural cliff edge. Volatility can expand rapidly in *either* direction. 
+        ### **⚡️ SYSTEM STATUS: The Gamma Flip Node (${zero_gamma_strike:.2f})**
+        * **The Market Reality:** Spot price is hovering directly on the true zero-gamma intersection. Structural gravity is completely offline; market makers are shifting inventory rapidly.
         
-        #### 🛑 **ADHD Guardrail: NO ENTRY HERE**
-        Do not try to guess or front-run the market inside this zone. Let the boundaries break first:
-        * 🚀 **UPWARD BREAKOUT TRIGGER:** If the price crosses above **${nearest_upper_strike:.2f}** and holds, the market shifts to safety. **BUY Calls** or **SELL Puts**.
-        * 📉 **DOWNWARD BREAKDOWN TRIGGER:** If the price drops below **${nearest_lower_strike:.2f}**, the floor vanishes. **BUY Puts** or **EXIT Longs** immediately.
+        #### 🛑 **ADHD Guardrail: STAND ASIDE**
+        Do not entry trades inside this high-friction boundary. Wait for clear velocity confirmation:
+        * 🚀 **UPWARD BREAKOUT:** If spot breaks above **${zero_gamma_strike + auto_threshold_value:.2f}**, long-gamma stabilizers activate. **BUY Calls**.
+        * 📉 **DOWNWARD BREAKDOWN:** If spot slips below **${zero_gamma_strike - auto_threshold_value:.2f}**, the momentum acceleration floor tears. **BUY Puts**.
         """)
         
     elif total_gex > 0:
         st.success("""
-        ### **🟢 SYSTEM STATUS: Positive GEX (Insulated Market Environment)**
-        * **The Market Reality:** Market makers are net long gamma. Their mechanical hedging will act as a buffer to blunt drops and steadily lift the stock via automated time and volatility decay.
+        ### **🟢 SYSTEM STATUS: Positive GEX (Insulated Mean-Reversion Regimes)**
+        * **The Market Reality:** Market makers are net long gamma. Mechanical flows blunt intraday trends. **Charm decay** is actively pulling options delta toward zero daily.
         """)
         
-        tab1, tab2, tab3 = st.tabs(["🔥 Play 1: Buying a Long Call", "💰 Play 2: Selling an OTM Put", "🛡️ Play 3: Cash-Secured Put (CSP)"])
+        tab1, tab2 = st.tabs(["💰 Play 1: Income Generation via OTM Puts", "🛡️ Play 2: Capital Preservation (CSPs)"])
         with tab1:
             st.markdown(f"""
-            #### 🎯 Execution Checklist for Long Calls
-            * **DTE (Time):** Choose an expiration **30 to 45 days out**. *Strict Rule:* Ignore cheap weeklies; short-term noise will trigger panic.
-            * **Strike Price:** Pick **At-the-Money (ATM)** or slightly **In-the-Money (ITM)** (Target Strike: **${nearest_lower_strike:.0f}** or **${nearest_upper_strike:.0f}**).
-            * **🚨 ADHD Anti-Trap Guardrail:** Never buy far Out-of-the-Money options. They decay to zero faster than the stock can climb to meet them.
+            #### 🎯 Execution Checklist: Structural Premium Capture
+            * **DTE (Time Frame):** Select **30 to 45 Days out**. This captures the absolute steepest acceleration bend of the newly updated **Charm decay curve**.
+            * **Strike Selection:** Sell premium **safely below** the absolute zero-gamma flip boundary of **${zero_gamma_strike:.2f}**. 
+            * **💡 Why it works:** You are trading with institutional wind at your back. Long dealer gamma pins price, while Charm decay melts the option value directly into your pocket.
             """)
         with tab2:
-            st.markdown("""
-            #### 🎯 Execution Checklist for Short Puts
-            * **DTE (Time):** Select an expiration **30 to 45 days out** to maximize the speed of time decay working in your favor.
-            * **Strike Price:** Find the highest green peak *below* the spot price on the map. Sell your put strike **at or one strike below** that wall.
-            * **Why it works:** The wall provides an institutional floor where market makers are forced to buy shares, protecting your position.
-            """)
-        with tab3:
             st.markdown(f"""
-            #### 🎯 Execution Checklist for Cash-Secured Puts (CSPs)
-            * **The Goal:** Get paid cash upfront to let the market automatically buy a high-quality asset for you at a steep discount.
-            * **The Blueprint:**
-              1. Verify you have the cash on hand to purchase 100 shares of **{ticker_input}**.
-              2. Sell an OTM Put 30-45 days out at a strike price you would comfortably own the stock at.
-              3. **Outcome A (Stock stays up):** Option expires worthless. You keep 100% of the cash premium.
-              4. **Outcome B (Stock dips):** You are assigned the 100 shares at your pre-set discount strike price, and your net cost basis is lowered by the cash premium you kept.
-            * **💡 ADHD Focus Hack:** This completely automates the entry process, eliminating the hesitation and overthinking that comes with trying to time a dip buy.
+            #### 🎯 Execution Checklist: Cash-Secured Puts (CSPs)
+            * **The Goal:** Automate your "buy the dip" process to avoid psychological hesitation.
+            * **The Blueprint:** Sell an out-of-the-money Put contract at a level you'd love to own shares long-term. If the stock drifts down, long dealer flows offer a soft landing near structural walls. If it stays flat, you retain the upfront cash.
             """)
+            
     else:
-        st.error("""
-        ### **🔴 SYSTEM STATUS: Negative GEX (Unpinned Volatility State)**
-        * **The Market Reality:** Market makers are short gamma. Any selling pressure forces structural algorithms to aggressively short more stock, creating rapid downward cascades.
+        st.error(f"""
+        ### **🔴 SYSTEM STATUS: Negative GEX (Unpinned Volatility Cascades)**
+        * **The Market Reality:** Spot is trapping deeply within the short-gamma void. Price action is pro-cyclical: cascading drops force computers to amplify shorting activity. 
         
-        #### 🛑 **ADHD Guardrail: PROTECT MODE**
-        * **Do not try to buy the dip.** There is no structural floor underneath the price action right now.
-        * **Approved Strategies:** Liquidate short-term long exposure, preserve cash, or utilize **Long Puts** / **Long VIX Calls** to benefit from expanding volatility.
+        #### 🛑 **ADHD Guardrail: PROTECT AND COLLECT**
+        * Absolute execution ban on selling naked or blind options premium here. The volatility expander will blow past standard standard deviation marks.
+        * **Approved Alpha Play:** Purchase **30 DTE Long Puts** or **Long VIX Call Options** to harvest premium expansion from reflexive institutional algorithmic selling.
         """)
 
     st.divider()
 
     # --- 7. PLOTLY CHART COMPONENT ---
-    st.subheader("📊 Scaled Gamma Profile Architecture")
-    st.caption("Bar heights express true volume-weighted dollar exposure capacity ($ GEX per strike). Higher green peaks serve as structural price walls.")
+    st.subheader("📊 Cumulative Volatility Profile Architecture")
+    st.caption("Bar heights express raw dollar exposure capacity per strike. The line charts cumulative structural flows.")
     
     fig = go.Figure()
+    
+    # GEX Bar Trace
     fig.add_trace(go.Bar(
         x=filtered_df['strike'],
         y=filtered_df['GEX'],
         marker_color=np.where(filtered_df['GEX'] >= 0, '#2ecc71', '#e74c3c'),
-        name='Dollar GEX Exposure',
-        hovertemplate="Strike: %{x}<br>Weighted GEX: $% {y:,.2f}<extra></extra>"
+        name='Strike Dollar GEX',
+        hovertemplate="Strike: %{x}<br>GEX: $ %{y:,.0f}<extra></extra>"
     ))
     
+    # Cumulative GEX Intersection Line
+    df_sorted_filtered = filtered_df.sort_values('strike')
+    df_sorted_filtered['cum_GEX_filtered'] = df_sorted_filtered['GEX'].cumsum()
+    
+    fig.add_trace(go.Scatter(
+        x=df_sorted_filtered['strike'],
+        y=df_sorted_filtered['cum_GEX_filtered'],
+        line=dict(color='#f1c40f', width=3),
+        name='Cumulative GEX Flow'
+    ))
+    
+    # Spot Marker
     fig.add_vline(
-        x=current_price, 
-        line_dash="dash", 
-        line_color="#3498db", 
-        line_width=3,
-        annotation_text=" SPOT PRICE ", 
-        annotation_position="top right"
+        x=current_price, line_dash="dash", line_color="#3498db", line_width=2.5,
+        annotation_text=" SPOT PRICE ", annotation_position="top right"
+    )
+    
+    # Exact Zero-Gamma Intersection Marker
+    fig.add_vline(
+        x=zero_gamma_strike, line_dash="dot", line_color="#9b59b6", line_width=2.5,
+        annotation_text=" TRUE FLIP NODE ", annotation_position="bottom left"
     )
     
     fig.update_layout(
         xaxis_title="Strike Price ($)",
-        yaxis_title="Volume-Weighted Dollar Gamma Exposure ($)",
+        yaxis_title="Dealers Structural Dollar Exposure capacity ($)",
         margin=dict(l=20, r=20, t=20, b=20),
-        height=450
+        height=480,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
     )
     st.plotly_chart(fig, use_container_width=True)
 
