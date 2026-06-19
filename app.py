@@ -3,6 +3,8 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
+from datetime import datetime
+import pytz  # To keep time zones explicitly accurate
 
 # --- 1. PAGE SETUP & VISUAL ANCHORS ---
 st.set_page_config(page_title="Flow Dashboard", layout="wide", initial_sidebar_state="expanded")
@@ -10,7 +12,7 @@ st.set_page_config(page_title="Flow Dashboard", layout="wide", initial_sidebar_s
 st.title("📊 Karsan Flow & Gamma Dashboard")
 st.caption("⚡ Quick Summary: This tool tracks options market maker hedges to predict if the stock market will drift upward smoothly or drop violently.")
 
-# --- 2. SIDEBAR WITH PERMANENT TRADE LOGIC CHEAT SHEET ---
+# --- 2. SIDEBAR WITH FLOATING LABELS & PERMANENT MEMORY ANCHOR ---
 with st.sidebar:
     st.header("🎛️ Dashboard Controls")
     
@@ -22,7 +24,6 @@ with st.sidebar:
     
     st.markdown("---")
     
-    # Brain Anchor: Permanent framework cheat sheet so you never forget the macro rules
     st.subheader("🧠 Buy/Sell Memory Anchor")
     with st.container(border=True):
         st.markdown("""
@@ -39,8 +40,8 @@ with st.sidebar:
 
 st.divider()
 
-# --- 3. OPTIMIZED DATA PIPELINE ---
-@st.cache_data(ttl=3600)
+# --- 3. OPTIMIZED DATA PIPELINE WITH TIMESTAMPS ---
+@st.cache_data(ttl=300)  # Reduced to 5 minutes so users get fresher data on refresh
 def load_options_data(ticker):
     try:
         stock = yf.Ticker(ticker)
@@ -48,11 +49,10 @@ def load_options_data(ticker):
         expirations = stock.options
         
         if not expirations:
-            return None, None
+            return None, None, None
             
         total_gamma_df = pd.DataFrame()
         
-        # Aggregate front 3 expirations where hedging pressure is most intense
         for exp in expirations[:3]:
             opt_chain = stock.option_chain(exp)
             calls = opt_chain.calls[['strike', 'openInterest']].copy()
@@ -64,15 +64,23 @@ def load_options_data(ticker):
             total_gamma_df = pd.concat([total_gamma_df, calls, puts], ignore_index=True)
             
         agg_df = total_gamma_df.groupby('strike').sum(numeric_only=True).reset_index()
-        return current_price, agg_df
+        
+        # Capture the precise system execution timestamp (US Eastern Time for markets)
+        est_tz = pytz.timezone('US/Eastern')
+        fetch_timestamp = datetime.now(est_tz).strftime("%Y-%m-%d %I:%M:%S %p EST")
+        
+        return current_price, agg_df, fetch_timestamp
     except Exception as e:
-        return None, None
+        return None, None, None
 
 # --- 4. EXECUTION & VISUAL RESULTS ---
 with st.spinner("Fetching market flows... Hang tight!"):
-    current_price, gamma_data = load_options_data(ticker_input)
+    current_price, gamma_data, data_time = load_options_data(ticker_input)
 
 if gamma_data is not None:
+    # ADHD Visual Cue: Date/Time Stamp Container clearly shown up top
+    st.info(f"📅 **Data Freshness Timestamp:** {data_time} (Note: Public options chain data is subject to a 15-20 min exchange delay).")
+
     lower_bound = current_price * 0.92
     upper_bound = current_price * 1.08
     filtered_df = gamma_data[(gamma_data['strike'] >= lower_bound) & (gamma_data['strike'] <= upper_bound)]
@@ -89,7 +97,7 @@ if gamma_data is not None:
 
     st.divider()
 
-    # --- ACTIONABLE PLAYBOOK (Your custom framework, dynamically focused) ---
+    # --- ACTIONABLE PLAYBOOK ---
     st.subheader("🎯 Active Execution Playbook")
     
     if total_gex > 0:
