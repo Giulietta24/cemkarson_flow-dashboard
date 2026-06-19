@@ -88,18 +88,15 @@ if gamma_data is not None:
     total_gex = filtered_df['Net_Gamma'].sum()
     
     # --- FLIP ZONE DETECTION MATH ---
-    # Find closest strikes immediately above and below the current spot price
     strikes_below = filtered_df[filtered_df['strike'] <= current_price]
     strikes_above = filtered_df[filtered_df['strike'] > current_price]
     
     has_red_below = (strikes_below['Net_Gamma'] < 0).any() if not strikes_below.empty else False
     has_green_above = (strikes_above['Net_Gamma'] > 0).any() if not strikes_above.empty else False
     
-    # Find exact nearby key trigger levels for the user interface
     nearest_upper_strike = strikes_above.iloc[0]['strike'] if not strikes_above.empty else current_price + 1
     nearest_lower_strike = strikes_below.iloc[-1]['strike'] if not strikes_below.empty else current_price - 1
     
-    # Define if we are standing directly on the border line (Flip Zone)
     is_flip_zone = has_red_below and has_green_above and (abs(current_price - nearest_lower_strike) / current_price < 0.015)
 
     # --- Big Bold Status Metrics ---
@@ -115,34 +112,62 @@ if gamma_data is not None:
 
     st.divider()
 
-    # --- 5. ACTIONABLE PLAYBOOK (ADHD DYNAMIC FOCUS BLOCKS) ---
+    # --- 5. ACTIONABLE PLAYBOOK WITH OPTIONS STRATEGY SELECTOR ---
     st.subheader("🎯 Active Execution Playbook")
     
     if is_flip_zone:
         st.warning(f"""
         ### **⚡️ CURRENT SETUP: The Razor's Edge (Gamma Flip Zone)**
-        
         * **Dashboard Signal:** You are standing right on the boundary between a green zone above and a red zone below. Do not look at total market statistics blindly here!
         * **The Action (How to Play It):** Do not guess or front-run the direction. Let the market cross a confirmation line first:
-          * 🚀 **The BUY Trigger:** If the price clears **${nearest_upper_strike:.2f}** and holds, **BUY the asset**. The green tractor beam is taking over, and dealers will mechanically push you up toward higher walls.
-          * 📉 **The SHORT Trigger:** If the price slips below **${nearest_lower_strike:.2f}**, **SELL your long positions / BUY Puts**. You have fallen off the cliff into the unpinned red zone, and dealers will panic-sell underlying stock to hedge, accelerating a rapid drop.
+          * 🚀 **The BUY Trigger:** If the price clears **${nearest_upper_strike:.2f}** and holds, execute an upside call option or equity buy.
+          * 📉 **The SHORT Trigger:** If the price slips below **${nearest_lower_strike:.2f}**, **SELL your long positions / BUY Puts**.
         """)
     elif total_gex > 0:
         st.success("""
         ### **🟢 CURRENT SETUP: Buy Asset / Sell Premium**
-        
         * **Dashboard Signal:** The total GEX metric is highly positive (**Green**), and the current stock price is sitting comfortably inside a cluster of green "Gamma Wall" peaks.
-        * **The Action (How to Play It):** **BUY** the underlying asset, buy the dips, or **SELL** out-of-the-money puts to harvest theta burn. Avoid chasing vertical intraday breakouts.
-        * **Why:** Time decay (**Charm**) and dropping volatility (**Vanna**) will force dealers to continuously buy the underlying shares mechanically over the coming days, guaranteeing an active "structural floor" beneath your trade.
+        * **The Macro Outlook:** Time decay (**Charm**) and dropping volatility (**Vanna**) will force dealers to continuously buy the underlying shares mechanically over the coming days, guaranteeing an active "structural floor" beneath your trade.
         """)
     else:
         st.error("""
         ### **🔴 CURRENT SETUP: Buy Volatility / Avoid Dips**
-        
         * **Dashboard Signal:** The price is submerged deep inside a zone dominated entirely by red bars (**Negative Gamma**).
-        * **The Action (How to Play It):** **SELL** long portfolios, buy outright momentum options, or **BUY VIX calls**. Do not try to catch the falling knife.
-        * **Why:** The market is structurally **"unpinned."** Any selling pressure forces dealers to mechanically dump shares to re-hedge, amplifying downward cascades. 
+        * **The Macro Outlook:** The market is structurally **"unpinned."** Any selling pressure forces dealers to mechanically dump shares to re-hedge, amplifying downward cascades. Do not look at bullish options plays right now.
         """)
+
+    # --- ADHD OPTIONS STRATEGY MATRIX (Only shown during Bullish/Breakout Conditions) ---
+    if total_gex > 0 or is_flip_zone:
+        st.markdown("### 🛠️ Options Playbook Selector")
+        st.caption("Since you aren't buying the underlying stock asset directly, click through these options blueprints to map your play:")
+        
+        tab1, tab2, tab3 = st.tabs(["🔥 Play 1: Long Call Option", "💰 Play 2: Sell OTM Put", "🛡️ Play 3: Cash-Secured Put (CSP)"])
+        
+        with tab1:
+            st.markdown(f"""
+            **Best For:** High leverage, maximum upside profit potential, low upfront cash required.
+            * 📅 **Expiration (DTE):** Go out **30 to 45 days**. Avoid weekly options entirely so short-term price swings don't trigger panic.
+            * 🎯 **Target Strike:** Buy **At-the-Money (ATM)** or slightly **In-the-Money (ITM)** (e.g., Target the **${nearest_lower_strike:.0f}** or **${nearest_upper_strike:.0f}** call strikes).
+            * 🚨 **ADHD Brain Trap:** Do not buy cheap, far Out-of-the-Money (OTM) calls. They decay too fast before the dealer 'tractor beam' has time to lift the stock price up to them.
+            """)
+            
+        with tab2:
+            st.markdown(f"""
+            **Best For:** Regular account margin users wanting high-probability income. You act like the insurance company.
+            * 📅 **Expiration (DTE):** Go out **30 to 45 days**. This maximizes the speed of **Charm (time decay)** working in your favor.
+            * 🎯 **Target Strike:** Look at the chart below. Find the highest green bar *below* the spot price. Sell your Put strike **at or slightly below that floor**.
+            * ✨ **Why it works here:** Because total Gamma is supportive, market makers are forced to buy the stock if it drops toward your strike, building a safety barrier for your short option.
+            """)
+            
+        with tab3:
+            st.markdown(f"""
+            **Best For:** Accumulating 100 shares of the stock cheaper while getting paid upfront cash to wait.
+            * 🛠️ **The Process:** Sell an Out-of-the-Money Put, but keep the full collateral cash on standby in your account.
+            * 🔄 **The Two Outcomes (No-Loss Mentality):**
+              * **Outcome A (Stock stays up/rips):** The put expires completely worthless. You pocket 100% of the cash premium.
+              * **Outcome B (Stock dips through floor):** You are automatically assigned 100 shares at your preferred discount strike price, while still keeping the cash premium collected on day one.
+            * 🧠 **ADHD Focus Hack:** This completely automates buying the dip, removing entry-point hesitation and trading analysis paralysis.
+            """)
 
     st.divider()
 
