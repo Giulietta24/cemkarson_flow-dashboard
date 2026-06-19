@@ -183,15 +183,28 @@ if data_matrix is not None:
     
     is_flip_zone = has_red_below and has_green_above and (abs(current_price - nearest_lower_strike) / current_price < auto_threshold_pct)
 
-    # --- 🧮 FIXED: CLEAN ROUNDED FORMATTING & CUSTOM HOVER TOOLTIP ---
-    gex_formatted_rounded = f"${total_gex:,.0f}"
+    # --- 🧠 SHORTHAND SHIFT FOR ADHD SCANNABILITY ---
+    # Turns raw millions into clean $X.XXM or thousands into $X.XXK
+    abs_gex = abs(total_gex)
+    sign = "-" if total_gex < 0 else ""
+    
+    if abs_gex >= 1_000_000_000:
+        gex_shorthand = f"{sign}${abs_gex / 1_000_000_000:.2f}B"
+    elif abs_gex >= 1_000_000:
+        gex_shorthand = f"{sign}${abs_gex / 1_000_000:.2f}M"
+    elif abs_gex >= 1_000:
+        gex_shorthand = f"{sign}${abs_gex / 1_000:.2f}K"
+    else:
+        gex_shorthand = f"{sign}${abs_gex:.2f}"
+
     gex_action_direction = "BUY shares to stabilize drops" if total_gex >= 0 else "DUMP shares, accelerating drops"
+    gex_formatted_raw = f"${total_gex:,.0f}"
     
     gex_tooltip_text = (
         f"💡 ADHD Cheat Sheet:\n\n"
         f"For every 1% that {ticker_input} moves up or down, institutional market maker software "
         f"is mechanically forced to automatically {gex_action_direction} by an estimated volume-adjusted value of "
-        f"{gex_formatted_rounded}.\n\n"
+        f"{gex_shorthand} ({gex_formatted_raw} raw).\n\n"
         f"• GREEN (+): Active price safety buffer.\n"
         f"• RED (-): High-velocity momentum fuel."
     )
@@ -203,7 +216,7 @@ if data_matrix is not None:
     with col2:
         st.metric(
             label="Total Gamma Exposure ($ GEX)", 
-            value=gex_formatted_rounded,
+            value=gex_shorthand, # Clean short format displayed on-screen!
             help=gex_tooltip_text
         )
     with col3:
@@ -220,91 +233,4 @@ if data_matrix is not None:
     st.subheader("🎯 Active Execution Playbook")
     
     if is_flip_zone:
-        st.warning(f"""
-        ### **⚡️ SYSTEM STATUS: The Razor's Edge (Gamma Flip Zone)**
-        * **The Market Reality:** You are standing on a structural cliff edge. Volatility can expand rapidly in *either* direction. 
-        
-        #### 🛑 **ADHD Guardrail: NO ENTRY HERE**
-        Do not try to guess or front-run the market inside this zone. Let the boundaries break first:
-        * 🚀 **UPWARD BREAKOUT TRIGGER:** If the price crosses above **${nearest_upper_strike:.2f}** and holds, the market shifts to safety. **BUY Calls** or **SELL Puts**.
-        * 📉 **DOWNWARD BREAKDOWN TRIGGER:** If the price drops below **${nearest_lower_strike:.2f}**, the floor vanishes. **BUY Puts** or **EXIT Longs** immediately.
-        """)
-        
-    elif total_gex > 0:
-        st.success("""
-        ### **🟢 SYSTEM STATUS: Positive GEX (Insulated Market Environment)**
-        * **The Market Reality:** Market makers are net long gamma. Their mechanical hedging will act as a buffer to blunt drops and steadily lift the stock via automated time and volatility decay.
-        """)
-        
-        tab1, tab2, tab3 = st.tabs(["🔥 Play 1: Buying a Long Call", "💰 Play 2: Selling an OTM Put", "🛡️ Play 3: Cash-Secured Put (CSP)"])
-        with tab1:
-            st.markdown(f"""
-            #### 🎯 Execution Checklist for Long Calls
-            * **DTE (Time):** Choose an expiration **30 to 45 days out**. *Strict Rule:* Ignore cheap weeklies; short-term noise will trigger panic.
-            * **Strike Price:** Pick **At-the-Money (ATM)** or slightly **In-the-Money (ITM)** (Target Strike: **${nearest_lower_strike:.0f}** or **${nearest_upper_strike:.0f}**).
-            * **🚨 ADHD Anti-Trap Guardrail:** Never buy far Out-of-the-Money options. They decay to zero faster than the stock can climb to meet them.
-            """)
-        with tab2:
-            st.markdown("""
-            #### 🎯 Execution Checklist for Short Puts
-            * **DTE (Time):** Select an expiration **30 to 45 days out** to maximize the speed of time decay working in your favor.
-            * **Strike Price:** Find the highest green peak *below* the spot price on the map. Sell your put strike **at or one strike below** that wall.
-            * **Why it works:** The wall provides an institutional floor where market makers are forced to buy shares, protecting your position.
-            """)
-        with tab3:
-            st.markdown(f"""
-            #### 🎯 Execution Checklist for Cash-Secured Puts (CSPs)
-            * **The Goal:** Get paid cash upfront to let the market automatically buy a high-quality asset for you at a steep discount.
-            * **The Blueprint:**
-              1. Verify you have the cash on hand to purchase 100 shares of **{ticker_input}**.
-              2. Sell an OTM Put 30-45 days out at a strike price you would comfortably own the stock at.
-              3. **Outcome A (Stock stays up):** Option expires worthless. You keep 100% of the cash premium.
-              4. **Outcome B (Stock dips):** You are assigned the 100 shares at your pre-set discount strike price, and your net cost basis is lowered by the cash premium you kept.
-            * **💡 ADHD Focus Hack:** This completely automates the entry process, eliminating the hesitation and overthinking that comes with trying to time a dip buy.
-            """)
-    else:
-        st.error("""
-        ### **🔴 SYSTEM STATUS: Negative GEX (Unpinned Volatility State)**
-        * **The Market Reality:** Market makers are short gamma. Any selling pressure forces structural algorithms to aggressively short more stock, creating rapid downward cascades.
-        
-        #### 🛑 **ADHD Guardrail: PROTECT MODE**
-        * **Do not try to buy the dip.** There is no structural floor underneath the price action right now.
-        * **Approved Strategies:** Liquidate short-term long exposure, preserve cash, or utilize **Long Puts** / **Long VIX Calls** to benefit from expanding volatility.
-        """)
-
-    st.divider()
-
-    # --- 7. PLOTLY CHART COMPONENT ---
-    st.subheader("📊 Scaled Gamma Profile Architecture")
-    st.caption("Bar heights express true volume-weighted dollar exposure capacity ($ GEX per strike). Higher green peaks serve as structural price walls.")
-    
-    fig = go.Figure()
-    fig.add_trace(go.Bar(
-        x=filtered_df['strike'],
-        y=filtered_df['GEX'],
-        marker_color=np.where(filtered_df['GEX'] >= 0, '#2ecc71', '#e74c3c'),
-        name='Dollar GEX Exposure',
-        hovertemplate="Strike: %{x}<br>Weighted GEX: $% {y:,.2f}<extra></extra>"
-    ))
-    
-    fig.add_vline(
-        x=current_price, 
-        line_dash="dash", 
-        line_color="#3498db", 
-        line_width=3,
-        annotation_text=" SPOT PRICE ", 
-        annotation_position="top right"
-    )
-    
-    fig.update_layout(
-        xaxis_title="Strike Price ($)",
-        yaxis_title="Volume-Weighted Dollar Gamma Exposure ($)",
-        margin=dict(l=20, r=20, t=20, b=20),
-        height=450
-    )
-    st.plotly_chart(fig, use_container_width=True)
-
-else:
-    st.error("❌ Data retrieval exception triggered.")
-    if 'last_error' in st.session_state:
-        st.code(f"System Error Trace: {st.session_state['last_error']}", language="text")
+        st.warning(f
