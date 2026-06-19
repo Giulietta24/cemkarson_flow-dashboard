@@ -15,19 +15,17 @@ st.caption("Institutional-grade mapping of options market maker hedging constrai
 
 st.warning("⚠️ **Disclaimer:** This dashboard is for educational and research purposes only. Options trading involves significant risk. This is not financial, legal, or tax advice.")
 
-# --- 2. VECTORIZED QUANT ENGINE (FIX 1 & FIX 2 FIXED) ---
+# --- 2. VECTORIZED QUANT ENGINE ---
 def process_chain_vectorized(df, option_type, S, T, r_rate, dte_weight):
     """
     Vectorized Black-Scholes Greeks Engine over raw NumPy arrays.
-    FIX 1: Resolved loop bottleneck with lightning-fast vectorized math.
-    FIX 2: Fixed Put Vanna/Charm sign-flip bugs. Greeks use native calculus directions.
+    Calculates spot-relative structural risk profiles cleanly across vectors.
     """
     df = df[['strike', 'openInterest', 'impliedVolatility']].copy()
     df = df[(df['openInterest'] > 0) & (df['impliedVolatility'] > 0)].copy()
     if df.empty:
         return pd.DataFrame()
         
-    # Indentation fix executed here:
     K = df['strike'].values
     iv = df['impliedVolatility'].values
     oi = df['openInterest'].values
@@ -40,17 +38,17 @@ def process_chain_vectorized(df, option_type, S, T, r_rate, dte_weight):
         vanna = -norm.pdf(d1) * (d2 / iv)
         charm = norm.pdf(d1) * (r_rate / (iv * np.sqrt(T)) - (d1 * d2) / (2 * T)) * (-1.0 / 365.0)
         
-        # GEX is signed by dealer position orientation (Short Puts = Short Spot Delta)
+        # GEX signed by dealer position orientation (Short Puts = Short Spot Delta)
         sign = 1.0 if option_type == 'call' else -1.0
         
     df['GEX'] = oi * gamma * 100 * (S**2) * dte_weight * sign
-    df['Vanna'] = oi * vanna * 100 * dte_weight   # Native formula sign
-    df['Charm'] = oi * charm * 100 * dte_weight   # Native formula sign
+    df['Vanna'] = oi * vanna * 100 * dte_weight   
+    df['Charm'] = oi * charm * 100 * dte_weight   
     df['IV_Raw'] = iv
     
     return df[['strike', 'GEX', 'Vanna', 'Charm', 'IV_Raw']]
 
-# --- 3. FIX 5: MAX PAIN ALGORITHMIC ANCHOR ---
+# --- 3. MAX PAIN ALGORITHMIC ANCHOR ---
 def calculate_max_pain(opt_chain):
     """
     Identifies the exact options strike that minimizes total systemic cash payout
@@ -74,7 +72,7 @@ def calculate_max_pain(opt_chain):
     except Exception:
         return None
 
-# --- 4. FIX 4: TICKER-SPECIFIC ATM IV DETECTOR ---
+# --- 4. TICKER-SPECIFIC ATM IV DETECTOR ---
 @st.cache_data(ttl=300)
 def get_ticker_and_vix_metrics(ticker, current_price):
     """Retrieves ticker-specific near-term ATM implied volatility alongside VIX context."""
@@ -91,11 +89,11 @@ def get_ticker_and_vix_metrics(ticker, current_price):
         hist = vix.history(period="5d")
         vix_delta = float(hist['Close'].iloc[-1] - hist['Close'].iloc[0]) if len(hist) >= 2 else 0.0
         
-        return atm_iv_now, vix_delta, chain
+        return atm_iv_now, vix_delta
     except Exception:
-        return 0.20, 0.0, None
+        return 0.20, 0.0
 
-# --- SIDEBAR CONTROLS & ADHD MEMORY ANCHOR ---
+# --- SIDEBAR CONTROLS ---
 with st.sidebar:
     st.header("🎛️ Parameters")
     ticker_input = st.text_input(label="Target Ticker Symbol", value="SPY").upper()
@@ -108,6 +106,9 @@ with st.sidebar:
 # --- 5. DATA ENGINE WITH TIMING SEGREGATION ---
 @st.cache_data(ttl=300)
 def load_and_compute_gex_engine(ticker, r_rate):
+    """
+    FIXED: Removed raw yfinance object from the return payload to prevent UnserializableReturnValueError.
+    """
     try:
         stock = yf.Ticker(ticker)
         current_price = stock.fast_info.get('last_price') or stock.info.get('regularMarketPrice')
@@ -116,7 +117,7 @@ def load_and_compute_gex_engine(ticker, r_rate):
             
         expirations = stock.options
         if not expirations:
-            return None, None, None, None
+            return current_price, None, None
             
         compiled_dfs = []
         today = datetime.now().date()
@@ -127,7 +128,6 @@ def load_and_compute_gex_engine(ticker, r_rate):
             if dte <= 0:
                 dte = 0.5
                 
-            # FIX 3: Replaced distorting 1/√dte function with Karsan-aligned linear urgency filter
             if dte > 45:
                 continue
             dte_weight = max(0.1, (46 - dte) / 45.0)
@@ -135,7 +135,6 @@ def load_and_compute_gex_engine(ticker, r_rate):
             
             opt_chain = stock.option_chain(exp_str)
             
-            # Fast vectorized calculation blocks
             call_res = process_chain_vectorized(opt_chain.calls, 'call', current_price, T, r_rate, dte_weight)
             put_res = process_chain_vectorized(opt_chain.puts, 'put', current_price, T, r_rate, dte_weight)
             
@@ -143,7 +142,7 @@ def load_and_compute_gex_engine(ticker, r_rate):
             if not put_res.empty: compiled_dfs.append(put_res)
             
         if not compiled_dfs:
-            return current_price, None, None, None
+            return current_price, None, None
             
         master_df = pd.concat(compiled_dfs, ignore_index=True)
         agg_df = master_df.groupby('strike').agg({
@@ -153,19 +152,26 @@ def load_and_compute_gex_engine(ticker, r_rate):
         est_tz = pytz.timezone('US/Eastern')
         fetch_timestamp = datetime.now(est_tz).strftime("%Y-%m-%d %I:%M:%S %p EST")
         
-        return current_price, agg_df, fetch_timestamp, stock
+        return current_price, agg_df, fetch_timestamp
         
     except Exception as e:
         st.session_state['last_error'] = str(e)
-        return None, None, None, None
+        return None, None, None
 
 # --- 6. PROCESSING & EXECUTION ENGINE ---
 with st.spinner("Executing Vectorized Volatility Quant Matrices..."):
-    current_price, data_matrix, data_time, stock_obj = load_and_compute_gex_engine(ticker_input, risk_free_rate)
+    current_price, data_matrix, data_time = load_and_compute_gex_engine(ticker_input, risk_free_rate)
 
 if data_matrix is not None:
-    atm_iv, vix_delta, near_chain = get_ticker_and_vix_metrics(ticker_input, current_price)
-    max_pain_strike = calculate_max_pain(near_chain) if near_chain is not None else None
+    atm_iv, vix_delta = get_ticker_and_vix_metrics(ticker_input, current_price)
+    
+    # Safely grab the first chain context outside the main cache loop to calculate Max Pain
+    try:
+        raw_stock = yf.Ticker(ticker_input)
+        near_chain = raw_stock.option_chain(raw_stock.options[0]) if raw_stock.options else None
+        max_pain_strike = calculate_max_pain(near_chain) if near_chain is not None else None
+    except Exception:
+        max_pain_strike = None
     
     st.info(f"📅 **Data Freshness Timestamp:** {data_time} | {ticker_input} ATM Implied Vol: {atm_iv*100:.1f}%")
 
@@ -185,8 +191,6 @@ if data_matrix is not None:
     
     auto_threshold_value = current_price * (max(0.005, min(0.035, atm_iv * 0.05)))
     is_flip_zone = abs(current_price - zero_gamma_strike) <= auto_threshold_value
-    
-    # Fix 4: Vanna trigger uses asset's specific IV profile window
     vanna_active = vix_delta < -0.50 or (total_vanna > 0 and vix_delta < 0)
 
     # --- SHORTHAND SHIFT FOR ADHD SCANNABILITY ---
@@ -228,11 +232,11 @@ if data_matrix is not None:
     elif vix_delta > 0.50 and total_vanna > 0:
         st.error(f"⚠️ **VANNA HEADWIND ACTIVE:** Spiking IV regime forcing systemic dealer spot liquidations.")
 
+    # FIXED: Replaced unclosed multiline f-string blocks with structured components
     if is_flip_zone:
-        st.warning(f"""
-        ### **⚡️ SYSTEM STATUS: The Gamma Flip Node (${zero_gamma_strike:.2f})**
+        st.warning(f"### ⚡️ SYSTEM STATUS: The Gamma Flip Node (${zero_gamma_strike:.2f})")
+        st.markdown(f"""
         * **The Reality:** Gravity offline. Computers are executing rapid directional inventory changes.
-        #### 🛑 **ADHD Guardrail: STAND ASIDE**
         * 🚀 **UPWARD BREAKOUT:** Spot cross above **${zero_gamma_strike + auto_threshold_value:.2f}** -> **BUY Calls**.
         * 📉 **DOWNWARD BREAKDOWN:** Spot slip below **${zero_gamma_strike - auto_threshold_value:.2f}** -> **BUY Puts**.
         """)
