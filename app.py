@@ -182,7 +182,7 @@ if data_matrix is not None:
             state_label = "🟢 POSITIVE GEX" if total_gex > 0 else "🔴 NEGATIVE GEX"
         st.metric(label="System Status", value=state_label)
 
-    st.caption(f"🤖 **Auto-Pilot Profile:** Avg Implied Volatility: **{avg_implied_vol*100:.1f}%** | Dynamic Flip Warning Proximity: **{auto_threshold_pct*100:.2f}%**.")
+    st.caption(f"🤖 **Auto-Pilot Profile:** Avg Implied Volatility: {avg_implied_vol*100:.1f}% | Dynamic Flip Warning Proximity: {auto_threshold_pct*100:.2f}%")
     st.divider()
 
     # --- 6. OPERATIONALIZED PLAYBOOK CONTROLS ---
@@ -191,9 +191,89 @@ if data_matrix is not None:
     if is_flip_zone:
         st.warning(f"""
         ### **⚡️ SYSTEM STATUS: The Razor's Edge (Gamma Flip Zone)**
-        * **The Market Reality:** You are standing on a structural cliff. Market makers are shuffling their inventory, and volatility can explode instantly in *either* direction. 
+        * **The Market Reality:** You are standing on a structural cliff edge. Volatility can expand rapidly in *either* direction. 
         
         #### 🛑 **ADHD Guardrail: NO ENTRY HERE**
-        Do not try to guess the direction while inside this gray zone. Wait for a confirmation line to break:
+        Do not try to guess or front-run the market inside this zone. Let the boundaries break first:
+        * 🚀 **UPWARD BREAKOUT TRIGGER:** If the price crosses above **${nearest_upper_strike:.2f}** and holds, the market shifts to safety. **BUY Calls** or **SELL Puts**.
+        * 📉 **DOWNWARD BREAKDOWN TRIGGER:** If the price drops below **${nearest_lower_strike:.2f}**, the floor vanishes. **BUY Puts** or **EXIT Longs** immediately.
+        """)
         
-        * 🚀 **UPWARD BREAKOUT TRIGGER:** If the price crosses above **${nearest_upper_strike:.2f}** and holds, the
+    elif total_gex > 0:
+        st.success("""
+        ### **🟢 SYSTEM STATUS: Positive GEX (Insulated Market Environment)**
+        * **The Market Reality:** Market makers are net long gamma. Their mechanical hedging will act as a buffer to blunt drops and steadily lift the stock via automated time and volatility decay.
+        """)
+        
+        tab1, tab2, tab3 = st.tabs(["🔥 Play 1: Buying a Long Call", "💰 Play 2: Selling an OTM Put", "🛡️ Play 3: Cash-Secured Put (CSP)"])
+        with tab1:
+            st.markdown(f"""
+            #### 🎯 Execution Checklist for Long Calls
+            * **DTE (Time):** Choose an expiration **30 to 45 days out**. *Strict Rule:* Ignore cheap weeklies; short-term noise will trigger panic.
+            * **Strike Price:** Pick **At-the-Money (ATM)** or slightly **In-the-Money (ITM)** (Target Strike: **${nearest_lower_strike:.0f}** or **${nearest_upper_strike:.0f}**).
+            * **🚨 ADHD Anti-Trap Guardrail:** Never buy far Out-of-the-Money options. They decay to zero faster than the stock can climb to meet them.
+            """)
+        with tab2:
+            st.markdown("""
+            #### 🎯 Execution Checklist for Short Puts
+            * **DTE (Time):** Select an expiration **30 to 45 days out** to maximize the speed of time decay working in your favor.
+            * **Strike Price:** Find the highest green peak *below* the spot price on the map. Sell your put strike **at or one strike below** that wall.
+            * **Why it works:** The wall provides an institutional floor where market makers are forced to buy shares, protecting your position.
+            """)
+        with tab3:
+            st.markdown(f"""
+            #### 🎯 Execution Checklist for Cash-Secured Puts (CSPs)
+            * **The Goal:** Get paid cash upfront to let the market automatically buy a high-quality asset for you at a steep discount.
+            * **The Blueprint:**
+              1. Verify you have the cash on hand to purchase 100 shares of **{ticker_input}**.
+              2. Sell an OTM Put 30-45 days out at a strike price you would comfortably own the stock at.
+              3. **Outcome A (Stock stays up):** Option expires worthless. You keep 100% of the cash premium.
+              4. **Outcome B (Stock dips):** You are assigned the 100 shares at your pre-set discount strike price, and your net cost basis is lowered by the cash premium you kept.
+            * **💡 ADHD Focus Hack:** This completely automates the entry process, eliminating the hesitation and overthinking that comes with trying to time a dip buy.
+            """)
+    else:
+        st.error("""
+        ### **🔴 SYSTEM STATUS: Negative GEX (Unpinned Volatility State)**
+        * **The Market Reality:** Market makers are short gamma. Any selling pressure forces structural algorithms to aggressively short more stock, creating rapid downward cascades.
+        
+        #### 🛑 **ADHD Guardrail: PROTECT MODE**
+        * **Do not try to buy the dip.** There is no structural floor underneath the price action right now.
+        * **Approved Strategies:** Liquidate short-term long exposure, preserve cash, or utilize **Long Puts** / **Long VIX Calls** to benefit from expanding volatility.
+        """)
+
+    st.divider()
+
+    # --- 7. PLOTLY CHART COMPONENT ---
+    st.subheader("📊 Scaled Gamma Profile Architecture")
+    st.caption("Bar heights express true dollar exposure capacity ($ GEX per strike). Higher green peaks serve as structural price walls.")
+    
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        x=filtered_df['strike'],
+        y=filtered_df['GEX'],
+        marker_color=np.where(filtered_df['GEX'] >= 0, '#2ecc71', '#e74c3c'),
+        name='Dollar GEX Exposure',
+        hovertemplate="Strike: %{x}<br>True GEX: $% {y:,.2f}<extra></extra>"
+    ))
+    
+    fig.add_vline(
+        x=current_price, 
+        line_dash="dash", 
+        line_color="#3498db", 
+        line_width=3,
+        annotation_text=" SPOT PRICE ", 
+        annotation_position="top right"
+    )
+    
+    fig.update_layout(
+        xaxis_title="Strike Price ($)",
+        yaxis_title="True Dollar Gamma Exposure ($)",
+        margin=dict(l=20, r=20, t=20, b=20),
+        height=450
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+else:
+    st.error("❌ Data retrieval exception triggered.")
+    if 'last_error' in st.session_state:
+        st.code(f"System Error Trace: {st.session_state['last_error']}", language="text")
