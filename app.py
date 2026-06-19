@@ -62,8 +62,8 @@ with st.sidebar:
         * Dealers net **short** gamma. They must sell drops and buy rips, accelerating volatility. Hedging flows create explosive momentum down or up. Avoid selling blind premium.
         """)
 
-# --- 4. DATA ENGINE WITH ERROR LOGGING & PROPER SCALE ---
-@st.cache_data(ttl=300)
+# --- 4. VOLUME-WEIGHTED DATA ENGINE ---
+@st.cache_data(ttl=60)
 def load_and_compute_gex(ticker, r_rate):
     try:
         stock = yf.Ticker(ticker)
@@ -94,13 +94,20 @@ def load_and_compute_gex(ticker, r_rate):
                 strike = row['strike']
                 oi = row['openInterest']
                 iv = row['impliedVolatility']
+                volume = row['volume'] if 'volume' in row and not np.isnan(row['volume']) else 0
+                
                 if oi > 0 and iv > 0:
                     gamma, vanna, charm = calculate_bs_greeks(current_price, strike, T, r_rate, iv)
+                    
+                    # Advanced Volume Weighting Scalar
+                    vol_scalar = 1.0 + (volume / (oi * 0.1 + 1.0))
+                    weighted_oi = oi * vol_scalar
+                    
                     compiled_data.append({
                         'strike': strike, 'Type': 'Call', 
-                        'GEX': oi * gamma * 100 * (current_price ** 2) * dte_weight, 
-                        'Vanna': oi * vanna * 100 * dte_weight, 
-                        'Charm': oi * charm * 100 * dte_weight,
+                        'GEX': weighted_oi * gamma * 100 * (current_price ** 2) * dte_weight, 
+                        'Vanna': weighted_oi * vanna * 100 * dte_weight, 
+                        'Charm': weighted_oi * charm * 100 * dte_weight,
                         'IV_Raw': iv
                     })
                     
@@ -109,13 +116,20 @@ def load_and_compute_gex(ticker, r_rate):
                 strike = row['strike']
                 oi = row['openInterest']
                 iv = row['impliedVolatility']
+                volume = row['volume'] if 'volume' in row and not np.isnan(row['volume']) else 0
+                
                 if oi > 0 and iv > 0:
                     gamma, vanna, charm = calculate_bs_greeks(current_price, strike, T, r_rate, iv)
+                    
+                    # Advanced Volume Weighting Scalar
+                    vol_scalar = 1.0 + (volume / (oi * 0.1 + 1.0))
+                    weighted_oi = oi * vol_scalar
+                    
                     compiled_data.append({
                         'strike': strike, 'Type': 'Put', 
-                        'GEX': oi * gamma * 100 * (current_price ** 2) * -1.0 * dte_weight, 
-                        'Vanna': oi * vanna * 100 * -1.0 * dte_weight, 
-                        'Charm': oi * charm * 100 * -1.0 * dte_weight,
+                        'GEX': weighted_oi * gamma * 100 * (current_price ** 2) * -1.0 * dte_weight, 
+                        'Vanna': weighted_oi * vanna * 100 * -1.0 * dte_weight, 
+                        'Charm': weighted_oi * charm * 100 * -1.0 * dte_weight,
                         'IV_Raw': iv
                     })
                     
@@ -140,11 +154,11 @@ def load_and_compute_gex(ticker, r_rate):
         return None, None, None
 
 # --- 5. PROCESSING & EXECUTION ENGINE ---
-with st.spinner("Executing Black-Scholes matrix integrations..."):
+with st.spinner("Executing Volume-Weighted Black-Scholes integrations..."):
     current_price, data_matrix, data_time = load_and_compute_gex(ticker_input, risk_free_rate)
 
 if data_matrix is not None:
-    st.info(f"📅 **Data Freshness Timestamp:** {data_time} | Calculated using explicit annualized Black-Scholes Greeks.")
+    st.info(f"📅 **Data Freshness Timestamp:** {data_time} | Incorporating Volume-Weighted Live Options Activity.")
 
     lower_bound = current_price * (1.0 - zoom_pct)
     upper_bound = current_price * (1.0 + zoom_pct)
@@ -176,13 +190,13 @@ if data_matrix is not None:
     gex_tooltip_text = (
         f"💡 ADHD Cheat Sheet:\n\n"
         f"For every 1% that {ticker_input} moves up or down, institutional market maker software "
-        f"is mechanically forced to automatically {gex_action_direction} by an estimated total value of "
+        f"is mechanically forced to automatically {gex_action_direction} by an estimated volume-adjusted value of "
         f"{gex_formatted_rounded}.\n\n"
-        f"• GREEN (+): Acting as a price safety buffer.\n"
-        f"• RED (-): Acting as high-velocity momentum fuel."
+        f"• GREEN (+): Active price safety buffer.\n"
+        f"• RED (-): High-velocity momentum fuel."
     )
 
-    # --- Metrics Layout (With Rounded Metrics and Custom Tooltip) ---
+    # --- Metrics Layout ---
     col1, col2, col3 = st.columns(3)
     with col1:
         st.metric(label=f"Current {ticker_input} Price", value=f"${current_price:.2f}")
@@ -262,7 +276,7 @@ if data_matrix is not None:
 
     # --- 7. PLOTLY CHART COMPONENT ---
     st.subheader("📊 Scaled Gamma Profile Architecture")
-    st.caption("Bar heights express true dollar exposure capacity ($ GEX per strike). Higher green peaks serve as structural price walls.")
+    st.caption("Bar heights express true volume-weighted dollar exposure capacity ($ GEX per strike). Higher green peaks serve as structural price walls.")
     
     fig = go.Figure()
     fig.add_trace(go.Bar(
@@ -270,7 +284,7 @@ if data_matrix is not None:
         y=filtered_df['GEX'],
         marker_color=np.where(filtered_df['GEX'] >= 0, '#2ecc71', '#e74c3c'),
         name='Dollar GEX Exposure',
-        hovertemplate="Strike: %{x}<br>True GEX: $% {y:,.2f}<extra></extra>"
+        hovertemplate="Strike: %{x}<br>Weighted GEX: $% {y:,.2f}<extra></extra>"
     ))
     
     fig.add_vline(
@@ -284,7 +298,7 @@ if data_matrix is not None:
     
     fig.update_layout(
         xaxis_title="Strike Price ($)",
-        yaxis_title="True Dollar Gamma Exposure ($)",
+        yaxis_title="Volume-Weighted Dollar Gamma Exposure ($)",
         margin=dict(l=20, r=20, t=20, b=20),
         height=450
     )
