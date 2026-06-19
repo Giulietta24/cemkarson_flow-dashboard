@@ -99,7 +99,7 @@ def load_and_compute_gex(ticker, r_rate):
                 if oi > 0 and iv > 0:
                     gamma, vanna, charm = calculate_bs_greeks(current_price, strike, T, r_rate, iv)
                     
-                    # Advanced Volume Weighting Scalar
+                    # Volume Weighting Scalar: Prioritizes active contracts over stale open interest
                     vol_scalar = 1.0 + (volume / (oi * 0.1 + 1.0))
                     weighted_oi = oi * vol_scalar
                     
@@ -121,7 +121,7 @@ def load_and_compute_gex(ticker, r_rate):
                 if oi > 0 and iv > 0:
                     gamma, vanna, charm = calculate_bs_greeks(current_price, strike, T, r_rate, iv)
                     
-                    # Advanced Volume Weighting Scalar
+                    # Volume Weighting Scalar
                     vol_scalar = 1.0 + (volume / (oi * 0.1 + 1.0))
                     weighted_oi = oi * vol_scalar
                     
@@ -183,7 +183,7 @@ if data_matrix is not None:
     
     is_flip_zone = has_red_below and has_green_above and (abs(current_price - nearest_lower_strike) / current_price < auto_threshold_pct)
 
-    # --- ADHD FLOAT OVER TOOLTIP GENERATION ---
+    # --- 🧮 FIXED: CLEAN ROUNDED FORMATTING & CUSTOM HOVER TOOLTIP ---
     gex_formatted_rounded = f"${total_gex:,.0f}"
     gex_action_direction = "BUY shares to stabilize drops" if total_gex >= 0 else "DUMP shares, accelerating drops"
     
