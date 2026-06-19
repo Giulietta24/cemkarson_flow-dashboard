@@ -169,12 +169,29 @@ if data_matrix is not None:
     
     is_flip_zone = has_red_below and has_green_above and (abs(current_price - nearest_lower_strike) / current_price < auto_threshold_pct)
 
-    # --- Metrics Layout ---
+    # --- ADHD FLOAT OVER TOOLTIP GENERATION ---
+    gex_formatted_rounded = f"${total_gex:,.0f}"
+    gex_action_direction = "BUY shares to stabilize drops" if total_gex >= 0 else "DUMP shares, accelerating drops"
+    
+    gex_tooltip_text = (
+        f"💡 ADHD Cheat Sheet:\n\n"
+        f"For every 1% that {ticker_input} moves up or down, institutional market maker software "
+        f"is mechanically forced to automatically {gex_action_direction} by an estimated total value of "
+        f"{gex_formatted_rounded}.\n\n"
+        f"• GREEN (+): Acting as a price safety buffer.\n"
+        f"• RED (-): Acting as high-velocity momentum fuel."
+    )
+
+    # --- Metrics Layout (With Rounded Metrics and Custom Tooltip) ---
     col1, col2, col3 = st.columns(3)
     with col1:
         st.metric(label=f"Current {ticker_input} Price", value=f"${current_price:.2f}")
     with col2:
-        st.metric(label="Total Gamma Exposure ($ GEX)", value=f"${total_gex:,.2f}")
+        st.metric(
+            label="Total Gamma Exposure ($ GEX)", 
+            value=gex_formatted_rounded,
+            help=gex_tooltip_text
+        )
     with col3:
         if is_flip_zone:
             state_label = "⚡ FLIP ZONE"
