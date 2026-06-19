@@ -10,21 +10,10 @@ st.set_page_config(page_title="Flow Dashboard", layout="wide", initial_sidebar_s
 st.title("📊 Karsan Flow & Gamma Dashboard")
 st.caption("⚡ Quick Summary: This tool tracks options market maker hedges to predict if the stock market will drift upward smoothly or drop violently.")
 
-# --- 2. ADHD-FRIENDLY CONCEPT EXPLAINER (COLLAPSED BY DEFAULT) ---
-with st.expander("💡 New to this? Click here for a 30-second cheat sheet"):
-    st.markdown("""
-    * **The Core Idea:** Big institutions trade millions in options. Market makers (dealers) take the other side. To stay safe, dealers must mechanically buy or sell the actual stock.
-    * **Volatility Trap (🟢 Long Gamma):** Dealers are forced to *buy dips* and *sell rallies*. The market gets pinned in a tight, safe range. Great time to sell options premium or buy quiet stocks.
-    * **Unpinned Market (🔴 Short Gamma):** Dealers are forced to *sell when the market drops* and *buy when it rips*. This acts like rocket fuel for volatility. Great time to buy outright puts/calls or trade aggressive momentum.
-    """)
-
-st.divider()
-
-# --- 3. SIDEBAR WITH FLOATING/HELP TEXT ---
+# --- 2. SIDEBAR WITH PERMANENT TRADE LOGIC CHEAT SHEET ---
 with st.sidebar:
     st.header("🎛️ Dashboard Controls")
     
-    # Streamlit uses 'help' tooltips to act as non-obtrusive floating labels/explanations
     ticker_input = st.text_input(
         label="Target Ticker Symbol", 
         value="SPY",
@@ -32,14 +21,29 @@ with st.sidebar:
     ).upper()
     
     st.markdown("---")
-    st.info("💡 **Quick Tip:** Check this dashboard during OpEx week (the 3rd week of every month) when these dealer flows are at their absolute strongest.")
+    
+    # Brain Anchor: Permanent framework cheat sheet so you never forget the macro rules
+    st.subheader("🧠 Buy/Sell Memory Anchor")
+    with st.container(border=True):
+        st.markdown("""
+        ### 🟢 The "Buy Asset" Setup
+        * **Signal:** Total GEX is positive (Green), spot is just below a massive green Gamma Wall.
+        * **Action:** **BUY** asset or **SELL** OTM puts.
+        * **Why:** Charm (time decay) and Vanna (dropping vol) force dealers to mechanically buy over the coming days.
+        
+        ### 🔴 The "Buy Vol" Setup
+        * **Signal:** Price breaks below green clusters into red bars (Negative Gamma).
+        * **Action:** **SELL** longs / **BUY** Puts or VIX calls.
+        * **Why:** Market is 'unpinned'. Dealers must panic-dump shares to hedge drops, accelerating crashes.
+        """)
 
-# --- 4. OPTIMIZED DATA PIPELINE ---
+st.divider()
+
+# --- 3. OPTIMIZED DATA PIPELINE ---
 @st.cache_data(ttl=3600)
 def load_options_data(ticker):
     try:
         stock = yf.Ticker(ticker)
-        # Using faster metadata fetch
         current_price = stock.fast_info['last_price']
         expirations = stock.options
         
@@ -48,13 +52,12 @@ def load_options_data(ticker):
             
         total_gamma_df = pd.DataFrame()
         
-        # Aggregate the front 3 near-term expirations where flow pressure is highest
+        # Aggregate front 3 expirations where hedging pressure is most intense
         for exp in expirations[:3]:
             opt_chain = stock.option_chain(exp)
             calls = opt_chain.calls[['strike', 'openInterest']].copy()
             puts = opt_chain.puts[['strike', 'openInterest']].copy()
             
-            # Simple, effective Net Gamma heuristic
             calls['Net_Gamma'] = calls['openInterest'] * 0.1
             puts['Net_Gamma'] = puts['openInterest'] * -0.1
             
@@ -65,12 +68,11 @@ def load_options_data(ticker):
     except Exception as e:
         return None, None
 
-# --- 5. EXECUTION & VISUAL RESULTS ---
+# --- 4. EXECUTION & VISUAL RESULTS ---
 with st.spinner("Fetching market flows... Hang tight!"):
     current_price, gamma_data = load_options_data(ticker_input)
 
 if gamma_data is not None:
-    # Zoom into the relevant price action zone (+/- 8% around current price)
     lower_bound = current_price * 0.92
     upper_bound = current_price * 1.08
     filtered_df = gamma_data[(gamma_data['strike'] >= lower_bound) & (gamma_data['strike'] <= upper_bound)]
@@ -82,33 +84,36 @@ if gamma_data is not None:
     with col1:
         st.metric(label=f"Current {ticker_input} Price", value=f"${current_price:.2f}")
     with col2:
-        # Highlighting the absolute state of the system clearly
-        state_label = "🟢 VOLATILITY TRAP" if total_gex > 0 else "🔴 UNPINNED RISK ZONE"
+        state_label = "🟢 LONG GAMMA ENVIRONMENT" if total_gex > 0 else "🔴 SHORT GAMMA ENVIRONMENT"
         st.metric(label="Current Structural Mode", value=state_label)
 
     st.divider()
 
-    # --- ACTIONABLE PLAYBOOK (Color-coded to trigger instant recognition) ---
-    st.subheader("🎯 Today's Trading Playbook")
+    # --- ACTIONABLE PLAYBOOK (Your custom framework, dynamically focused) ---
+    st.subheader("🎯 Active Execution Playbook")
     
     if total_gex > 0:
         st.success("""
-        **MARKET ENVIRONMENT: SAFE / MEAN-REVERTING**
-        * **The Mechanics:** Market makers are insulating the market. Big crashes are structurally highly unlikely right now because dealers buy every dip.
-        * **What to do:** Look to buy asset dips near support levels. Avoid chasing massive intraday breakouts (they will likely fizzle out). Great environment for collecting option premium (Theta burn).
+        ### **🟢 CURRENT SETUP: Buy Asset / Sell Premium**
+        
+        * **Dashboard Signal:** The total GEX metric is highly positive (**Green**), and the current stock price is sitting right below a massive green "Gamma Wall" peak.
+        * **The Action:** **BUY** the underlying asset or **SELL** out-of-the-money puts.
+        * **Why (The Flow Mechanics):** Time decay (**Charm**) and dropping volatility (**Vanna**) will force dealers to continuously buy the underlying shares mechanically over the coming days, guaranteeing a "structural floor" beneath your trade.
         """)
     else:
         st.error("""
-        **MARKET ENVIRONMENT: FRAGILE / EXPLOSIVE**
-        * **The Mechanics:** Market makers are short gamma. If a selloff starts, dealers will panic-sell underlying stock to hedge, creating a cascade. 
-        * **What to do:** Protect long portfolios. Buy outright puts or volatility instruments (VIX). If the market breaks a technical support line, expect an aggressive momentum flush downwards—do not try to catch the falling knife.
+        ### **🔴 CURRENT SETUP: Buy Volatility / Avoid Dips**
+        
+        * **Dashboard Signal:** The current price breaks **below** the cluster of positive green bars and enters a zone dominated by red bars (**Negative Gamma**).
+        * **The Action:** **SELL** your long positions / **BUY** Put Options / **BUY** VIX calls.
+        * **Why (The Flow Mechanics):** The market is now **"unpinned."** Any further drop forces dealers to dump shares to re-hedge, amplifying the downward spiral. Dips will not be bought by market makers; they will be aggressively shorted by them.
         """)
 
     st.divider()
 
-    # --- 6. INTERACTIVE VISUALIZATION ---
+    # --- 5. INTERACTIVE VISUALIZATION ---
     st.subheader("📊 The Gamma Wall Map")
-    st.caption("Look for the tallest bars. Large green bars act as structural price magnets and floors; red bars act as acceleration points.")
+    st.caption("Identify your current position relative to the nearest walls. Green walls block drops; Red walls accelerate them.")
     
     fig = go.Figure()
     fig.add_trace(go.Bar(
@@ -119,13 +124,12 @@ if gamma_data is not None:
         hovertemplate="Strike: %{x}<br>Net Flow: %{y:,.0f}<extra></extra>"
     ))
     
-    # Clear blue vertical anchor line for current underlying price
     fig.add_vline(
         x=current_price, 
         line_dash="dash", 
         line_color="#3498db", 
         line_width=3,
-        annotation_text=" YOU ARE HERE", 
+        annotation_text=" 🎯 YOU ARE HERE", 
         annotation_position="top right"
     )
     
