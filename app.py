@@ -13,7 +13,7 @@ st.set_page_config(page_title="GEX Flow Dashboard", layout="wide", initial_sideb
 st.title("📊 SPY Structural Flow Dashboard")
 st.caption("Tracking Options Market Maker Hedging Constraints.")
 
-# --- 2. THE PERSISTENT ADHD LEFT SIDEBAR PANEL ---
+# --- 2. THE PERSISTENT LEFT SIDEBAR PANEL ---
 with st.sidebar:
     st.header("🎛️ Controls & Parameters")
     ticker_input = st.text_input(label="Target Ticker Symbol", value="SPY").upper()
@@ -23,7 +23,7 @@ with st.sidebar:
     zoom_pct = st.slider("Chart Zoom Window (±%)", min_value=3, max_value=15, value=6, step=1) / 100.0
     risk_free_rate = st.number_input("Risk-Free Rate (r)", value=0.05, step=0.01)
 
-    # --- ADHD QUICK-LOOK CHEAT SHEET ---
+    # --- QUICK-LOOK CHEAT SHEET ---
     st.markdown("---")
     st.subheader("🧠 2-Second Cheat Sheet Playbook")
     with st.container(border=True):
@@ -195,80 +195,3 @@ data_matrix, atm_iv, max_pain_strike, data_time = load_and_compute_gex_engine(ti
 if data_matrix is not None:
     agg_df_sorted = data_matrix.sort_values('strike').copy()
     agg_df_sorted['cumulative_GEX'] = agg_df_sorted['GEX'].cumsum()
-    sign_changes = agg_df_sorted[(agg_df_sorted['cumulative_GEX'] * agg_df_sorted['cumulative_GEX'].shift(1) < 0)]
-    zero_gamma_strike = sign_changes['strike'].iloc[0] if not sign_changes.empty else current_price
-
-    lower_bound = current_price * (1.0 - zoom_pct)
-    upper_bound = current_price * (1.0 + zoom_pct)
-    filtered_df = data_matrix[(data_matrix['strike'] >= lower_bound) & (data_matrix['strike'] <= upper_bound)].copy()
-
-    total_gex_dollar = data_matrix['GEX'].sum()
-    total_gex_shares = total_gex_dollar / current_price
-    
-    pct_from_flip = (abs(current_price - zero_gamma_strike) / current_price)
-    is_approaching_zero = pct_from_flip <= 0.01
-
-    # --- SCOREBOARD METRICS ROW (WITH STOCK NATIVE VOLATILITY CONTEXT) ---
-    col1, col2, col3, col4, col5, col6 = st.columns(6)
-    with col1:
-        st.metric(label=f"Price ({ticker_input})", value=f"${current_price:.2f}")
-    with col2:
-        st.metric(label="Zero GEX Flip Node", value=f"${zero_gamma_strike:.2f}")
-    with col3:
-        st.metric(label="Total Net GEX", value=format_scaled_exposure(total_gex_dollar))
-    with col4:
-        st.metric(label="Total GEX (Shares)", value=format_scaled_shares(total_gex_shares))
-    with col5:
-        st.metric(label=f"Ticker Implied Vol (ATM)", value=f"{atm_iv * 100:.1f}%")
-    with col6:
-        if is_approaching_zero:
-            st.warning("⚡ TRANSITION")
-        elif total_gex_dollar > 0:
-            st.success("🟢 CALM REGIME")
-        else:
-            st.error("🔴 ACCELERATION")
-
-    st.divider()
-
-    # --- STRUCTURAL PLAYBOOK GUIDELINES ---
-    st.subheader("🎯 Structural Playbook Guidelines")
-    
-    if is_approaching_zero:
-        st.warning(f"🚨 **MODEL SIGNAL: TRANSITION ZONE RANGE INTRUSION.** Price is within {pct_from_flip*100:.1f}% of the calculated Zero-Gamma node (${zero_gamma_strike:.2f}).")
-    else:
-        st.info(f"ℹ️ **Tipping Point Proximity:** Price is currently {pct_from_flip*100:.1f}% away from the calculated Zero-Gamma Strike (${zero_gamma_strike:.2f}).")
-
-    if len(filtered_df) < 5:
-        st.warning("⚠️ **DATA QUALITY NOTICE:** Low strike density detected inside current zoom window.")
-
-    col_pb1, col_pb2 = st.columns(2)
-    with col_pb1:
-        st.markdown(f"""
-        ### 🟢 ABOVE ESTIMATED ZERO-GAMMA (> ${zero_gamma_strike:.2f})
-        * **The Alignment:** Historical bias favors lower systemic variance and compressed trading scales.
-        * **Underlying Model Logic:** Options intermediaries balance inventory by counter-trend buying/selling.
-        """)
-    with col_pb2:
-        st.markdown(f"""
-        ### 🔴 BELOW ESTIMATED ZERO-GAMMA (< ${zero_gamma_strike:.2f})
-        * **The Alignment:** Higher statistical tail risks and accelerated intraday expansion metrics.
-        * **Underlying Model Logic:** Intermediaries chase momentum to maintain portfolio risk neutralization benchmarks.
-        """)
-
-    st.divider()
-
-    # --- 8. PLOTLY CHART COMPONENT ---
-    st.subheader("📊 Cumulative Volatility Profile Architecture")
-    
-    chart_mode = st.radio("Display Profile Selection", ["Net GEX Profile", "Call / Put Distribution Split"], horizontal=True)
-    
-    fig = go.Figure()
-    if chart_mode == "Net GEX Profile":
-        fig.add_trace(go.Bar(
-            x=filtered_df['strike'], y=filtered_df['GEX'],
-            marker_color=np.where(filtered_df['GEX'] >= 0, '#2ecc71', '#e74c3c'),
-            showlegend=False, hovertemplate="Strike: %{x}<br>Net GEX: $ %{y:,.0f}<extra></extra>"
-        ))
-    else:
-        fig.add_trace(go.Bar(
-            x=filtered_df
