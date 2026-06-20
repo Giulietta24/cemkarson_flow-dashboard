@@ -14,7 +14,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# FIXED: Added prefers-reduced-motion CSS guard to support accessibility profiles
+# Accessibility-guarded CSS customization
 st.markdown("""
 <style>
     @media (prefers-reduced-motion: no-preference) {
@@ -29,7 +29,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# FIXED: Restored original required educational risk disclaimer banner
+# Required educational risk disclaimer banner
 st.warning("⚠️ For educational and research purposes only. Not financial advice.")
 
 st.title("📊 SPY Structural Flow Dashboard")
@@ -49,7 +49,7 @@ with st.sidebar:
     min_dte = st.number_input("Minimum DTE Filter", min_value=0, max_value=10, value=0)
     max_dte = st.number_input("Maximum DTE Filter", min_value=11, max_value=90, value=45)
 
-    # --- ADHD COGNITIVE OVERLAY / CHEAT SHEET PLAYBOOK ---
+    # ADHD COGNITIVE OVERLAY / CHEAT SHEET PLAYBOOK
     st.markdown("---")
     st.subheader("🧠 2-Second Cheat Sheet Playbook")
     with st.container(border=True):
@@ -87,129 +87,4 @@ def process_chain_vectorized(df, option_type, S, T, r_rate, dte_weight):
         
         pdf_d1 = norm.pdf(d1)
         gamma = np.nan_to_num(pdf_d1 / (S * iv * np.sqrt(T)), nan=0.0, posinf=0.0)
-        vanna = np.nan_to_num(-pdf_d1 * (d2 / iv), nan=0.0, posinf=0.0)
-        charm = np.nan_to_num(
-            pdf_d1 * (r_rate / (iv * np.sqrt(T)) - (d1 * d2) / (2 * T)) * (-1.0 / 365.0), 
-            nan=0.0, posinf=0.0
-        )
-        
-        sign = 1.0 if option_type == 'call' else -1.0
-        
-    df['GEX'] = oi * gamma * 100 * (S**2) * dte_weight * sign
-    df['Vanna'] = oi * vanna * 100 * dte_weight   
-    df['Charm'] = oi * charm * 100 * dte_weight   
-    df['IV_Raw'] = iv
-    df['Option_Type'] = option_type
-    
-    return df[['strike', 'GEX', 'Vanna', 'Charm', 'IV_Raw', 'Option_Type']]
-
-# --- 4. VECTORIZED MAX PAIN ENGINE ---
-def calculate_max_pain_vectorized(opt_chain):
-    try:
-        calls = opt_chain.calls[['strike', 'openInterest']].dropna()
-        puts = opt_chain.puts[['strike', 'openInterest']].dropna()
-        
-        all_strikes = sorted(set(calls['strike']) | set(puts['strike']))
-        strikes = np.array(all_strikes)
-        if len(strikes) == 0:
-            return None
-            
-        c_strikes, c_oi = calls['strike'].values, calls['openInterest'].values
-        p_strikes, p_oi = puts['strike'].values, puts['openInterest'].values
-        
-        strikes_col = strikes[:, np.newaxis]
-        call_loss = np.maximum(c_strikes - strikes_col, 0) * c_oi * 100
-        put_loss = np.maximum(strikes_col - p_strikes, 0) * p_oi * 100
-        
-        total_loss = call_loss.sum(axis=1) + put_loss.sum(axis=1)
-        return float(strikes[np.argmin(total_loss)])
-    except Exception:
-        return None
-
-# --- 5. HUMAN-READABLE METRIC SCALING COMPONENT ---
-def format_scaled_exposure(val):
-    abs_val = abs(val)
-    sign = "-" if val < 0 else ""
-    if abs_val >= 1e9:
-        return f"{sign}${abs_val / 1e9:.2f}B"
-    elif abs_val >= 1e6:
-        return f"{sign}${abs_val / 1e6:.2f}M"
-    else:
-        return f"{sign}${abs_val:,.0f}"
-
-def format_scaled_shares(val):
-    abs_val = abs(val)
-    sign = "-" if val < 0 else ""
-    if abs_val >= 1e6:
-        return f"{sign}{abs_val / 1e6:.2f}M"
-    else:
-        return f"{sign}{abs_val:,.0f}"
-
-# --- 6. DATA INGESTION ENGINE ---
-with st.spinner("Executing Volatility Quant Matrices..."):
-    try:
-        stock = yf.Ticker(ticker_input)
-        current_price = stock.fast_info.get('last_price')
-        if current_price is None or np.isnan(current_price):
-            current_price = stock.info.get('regularMarketPrice')
-        if current_price is None or np.isnan(current_price):
-            hist = stock.history(period="1d")
-            if not hist.empty:
-                current_price = float(hist['Close'].iloc[-1])
-    except Exception:
-        current_price = None
-
-# FIXED: Implemented short-circuit verification logic to protect against passing None objects to np.isnan
-if not current_price or (isinstance(current_price, float) and np.isnan(current_price)):
-    st.error(f"❌ Failed to extract market price updates for {ticker_input}.")
-    st.stop()
-
-# Cache key is rounded to 2dp for lookup parameter stability
-price_key = round(current_price, 2)
-
-@st.cache_data(ttl=300)
-def load_and_compute_gex_engine(ticker, r_rate, target_price, min_d, max_d):
-    try:
-        stock_obj = yf.Ticker(ticker)
-        expirations = stock_obj.options
-        if not expirations:
-            return None, None, None, None, 0.0
-            
-        try:
-            near_chain = stock_obj.option_chain(expirations[0])
-            atm_idx = (near_chain.calls['strike'] - target_price).abs().idxmin()
-            atm_iv_now = float(near_chain.calls.loc[atm_idx, 'impliedVolatility'])
-            max_pain_val = calculate_max_pain_vectorized(near_chain)
-        except Exception:
-            atm_iv_now = 0.20
-            max_pain_val = None
-            
-        compiled_dfs = []
-        today = datetime.now().date()
-        
-        for exp_str in expirations:
-            try:
-                exp_date = datetime.strptime(exp_str, "%Y-%m-%d").date()
-                dte = (exp_date - today).days
-                if dte < min_d or dte > max_d:
-                    continue
-                    
-                dte_weight = max(0.1, (max_d + 1 - dte) / max(max_d, 1))
-                T = max(dte, 1) / 365.0
-                
-                opt_chain = stock_obj.option_chain(exp_str)
-                call_res = process_chain_vectorized(opt_chain.calls, 'call', target_price, T, r_rate, dte_weight)
-                put_res = process_chain_vectorized(opt_chain.puts, 'put', target_price, T, r_rate, dte_weight)
-                
-                if not call_res.empty: compiled_dfs.append(call_res)
-                if not put_res.empty: compiled_dfs.append(put_res)
-            except Exception:
-                continue
-            
-        if not compiled_dfs:
-            return None, atm_iv_now, max_pain_val, "No Compiled Data", 0.0
-            
-        master_df = pd.concat(compiled_dfs, ignore_index=True)
-        
-        gex_threshold = master_df.groupby('strike')['GEX'].transform('sum').abs()
-        noise_floor = gex_threshold.
+        vanna = np.nan_to_num(-pdf_
