@@ -4,7 +4,7 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from scipy.stats import norm
-from datetime import datetime, timedelta
+from datetime import datetime
 import pytz
 
 # --- 1. PAGE SETUP & CONFIGURATION ---
@@ -23,7 +23,7 @@ with st.sidebar:
     zoom_pct = st.slider("Chart Zoom Window (±%)", min_value=3, max_value=15, value=6, step=1) / 100.0
     risk_free_rate = st.number_input("Risk-Free Rate (r)", value=0.05, step=0.01)
 
-    # --- THE RESTORED ADHD QUICK-LOOK CHEAT SHEET ---
+    # --- ADHD QUICK-LOOK CHEAT SHEET ---
     st.markdown("---")
     st.subheader("🧠 2-Second Cheat Sheet Playbook")
     with st.container(border=True):
@@ -97,20 +97,24 @@ def calculate_max_pain_vectorized(opt_chain):
     except Exception:
         return None
 
-# --- 5. HIGH-SPEED VIX EXTRACTION ENGINE ---
-@st.cache_data(ttl=900)
-def fetch_vix_context():
-    try:
-        vix = yf.Ticker("^VIX")
-        hist = vix.history(period="7d")
-        if len(hist) >= 5:
-            current_vix = hist['Close'].iloc[-1]
-            prior_vix = hist['Close'].iloc[-5]
-            change = current_vix - prior_vix
-            return current_vix, change
-    except Exception:
-        pass
-    return 0.0, 0.0
+# --- 5. HUMAN-READABLE METRIC SCALING COMPONENT ---
+def format_scaled_exposure(val):
+    abs_val = abs(val)
+    sign = "-" if val < 0 else ""
+    if abs_val >= 1e9:
+        return f"{sign}${abs_val / 1e9:.2f}B"
+    elif abs_val >= 1e6:
+        return f"{sign}${abs_val / 1e6:.2f}M"
+    else:
+        return f"{sign}${abs_val:,.0f}"
+
+def format_scaled_shares(val):
+    abs_val = abs(val)
+    sign = "-" if val < 0 else ""
+    if abs_val >= 1e6:
+        return f"{sign}{abs_val / 1e6:.2f}M"
+    else:
+        return f"{sign}{abs_val:,.0f}"
 
 # --- 6. DATA INGESTION ENGINE ---
 with st.spinner("Executing Volatility Quant Matrices..."):
@@ -186,7 +190,6 @@ def load_and_compute_gex_engine(ticker, r_rate, current_price):
         return None, None, None, None
 
 data_matrix, atm_iv, max_pain_strike, data_time = load_and_compute_gex_engine(ticker_input, risk_free_rate, current_price)
-vix_val, vix_5d_change = fetch_vix_context()
 
 # --- 7. DASHBOARD MAIN DISPLAY REGIME ---
 if data_matrix is not None:
@@ -205,19 +208,18 @@ if data_matrix is not None:
     pct_from_flip = (abs(current_price - zero_gamma_strike) / current_price)
     is_approaching_zero = pct_from_flip <= 0.01
 
-    # --- SCOREBOARD METRICS ROW (EXPANDED TO 6 COLUMNS) ---
+    # --- SCOREBOARD METRICS ROW (WITH STOCK NATIVE VOLATILITY CONTEXT) ---
     col1, col2, col3, col4, col5, col6 = st.columns(6)
     with col1:
         st.metric(label=f"Price ({ticker_input})", value=f"${current_price:.2f}")
     with col2:
         st.metric(label="Zero GEX Flip Node", value=f"${zero_gamma_strike:.2f}")
     with col3:
-        st.metric(label="Total Net GEX", value=f"${total_gex_dollar:,.0f}")
+        st.metric(label="Total Net GEX", value=format_scaled_exposure(total_gex_dollar))
     with col4:
-        st.metric(label="Total GEX (Shares)", value=f"{total_gex_shares:,.0f}")
+        st.metric(label="Total GEX (Shares)", value=format_scaled_shares(total_gex_shares))
     with col5:
-        vix_label = f"VIX: {vix_val:.2f}"
-        st.metric(label="VIX 5D Change", value=vix_label, delta=f"{vix_5d_change:+.2f}", delta_color="inverse")
+        st.metric(label=f"Ticker Implied Vol (ATM)", value=f"{atm_iv * 100:.1f}%")
     with col6:
         if is_approaching_zero:
             st.warning("⚡ TRANSITION")
@@ -269,44 +271,4 @@ if data_matrix is not None:
         ))
     else:
         fig.add_trace(go.Bar(
-            x=filtered_df['strike'], y=filtered_df['Call_GEX'],
-            marker_color='#2ecc71', showlegend=False, hovertemplate="Strike: %{x}<br>Call GEX: $ %{y:,.0f}<extra></extra>"
-        ))
-        fig.add_trace(go.Bar(
-            x=filtered_df['strike'], y=filtered_df['Put_GEX'],
-            marker_color='#e74c3c', showlegend=False, hovertemplate="Strike: %{x}<br>Put GEX: $ %{y:,.0f}<extra></extra>"
-        ))
-        fig.update_layout(barmode='group')
-    
-    df_sorted_display = data_matrix[(data_matrix['strike'] >= lower_bound) & (data_matrix['strike'] <= upper_bound)].sort_values('strike').copy()
-    df_sorted_display['cum_GEX_display'] = df_sorted_display['GEX'].cumsum()
-    
-    fig.add_trace(go.Scatter(
-        x=df_sorted_display['strike'], y=df_sorted_display['cum_GEX_display'],
-        line=dict(color='#f1c40f', width=3), showlegend=False
-    ))
-    
-    fig.add_vline(x=current_price, line_dash="dash", line_color="#3498db", line_width=2.5)
-    fig.add_vline(x=zero_gamma_strike, line_dash="dot", line_color="#9b59b6", line_width=2.5)
-    if max_pain_strike is not None:
-        fig.add_vline(x=max_pain_strike, line_dash="dot", line_color="#e67e22", line_width=2.5)
-        
-    fig.update_layout(
-        template="plotly_dark", xaxis_title="Strike Price ($)", yaxis_title="Exposure Capacity Sum ($)",
-        margin=dict(l=40, r=40, t=20, b=40), height=600, showlegend=False
-    )
-    st.plotly_chart(fig, use_container_width=True)
-
-    # --- 9. QUANT BACKTESTING EXPORT ENGINE ---
-    st.divider()
-    st.subheader("💾 Export Flow Data For Offline Backtesting")
-    
-    csv_buffer = data_matrix.to_csv(index=False).encode('utf-8')
-    st.download_button(
-        label="📥 Export Full Structural Data Matrix to CSV",
-        data=csv_buffer,
-        file_name=f"{ticker_input}_GEX_Matrix_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-        mime="text/csv"
-    )
-else:
-    st.error("❌ Data matrix parsing execution failed.")
+            x=filtered_df
