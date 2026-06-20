@@ -69,7 +69,7 @@ def calculate_max_pain_vectorized(opt_chain):
     except Exception:
         return None
 
-# --- SIDEBAR CONTROLS & MENTAL MODEL ANCHOR ---
+# --- SIDEBAR CONTROLS ---
 with st.sidebar:
     st.header("🎛️ Parameters")
     ticker_input = st.text_input(label="Target Ticker Symbol", value="SPY").upper()
@@ -78,30 +78,26 @@ with st.sidebar:
     st.subheader("⚙️ Model Settings")
     zoom_pct = st.slider("Chart Zoom Window (±%)", min_value=3, max_value=15, value=8, step=1) / 100.0
     risk_free_rate = st.number_input("Risk-Free Rate (r)", value=0.05, step=0.01)
-    
-    st.markdown("---")
-    st.subheader("🧠 Playbook Quick Anchor")
-    with st.container(border=True):
-        st.markdown("""
-        **🟢 Positive GEX Zone:**
-        * Market is insulated. Volatility is suppressed. Expect mean reversion.
-        
-        **🔴 Negative GEX Zone:**
-        * Market is unpinned. Volatility is amplified. Expect fast, cascading moves.
-        """)
 
-# --- 4. DATA ENGINE WITH TIMING SEGREGATION ---
+# --- 4. DATA ENGINE ---
+with st.spinner("Executing Vectorized Volatility Quant Matrices..."):
+    try:
+        stock = yf.Ticker(ticker_input)
+        current_price = stock.fast_info.get('last_price') or stock.info.get('regularMarketPrice')
+    except Exception:
+        current_price = None
+
+if current_price is None:
+    st.error(f"❌ Failed to extract market price updates for {ticker_input}.")
+    st.stop()
+
 @st.cache_data(ttl=300)
-def load_and_compute_gex_engine(ticker, r_rate):
+def load_and_compute_gex_engine(ticker, r_rate, current_price):
     try:
         stock = yf.Ticker(ticker)
-        current_price = stock.fast_info.get('last_price') or stock.info.get('regularMarketPrice')
-        if not current_price:
-            return None, None, None, None, None, None
-            
         expirations = stock.options
         if not expirations:
-            return current_price, None, None, None, None, None
+            return None, None, None, None
             
         try:
             near_exp = expirations[0]
@@ -128,16 +124,12 @@ def load_and_compute_gex_engine(ticker, r_rate):
             exp_date = datetime.strptime(exp_str, "%Y-%m-%d").date()
             dte = (exp_date - today).days
             
-            if dte <= 0:
-                continue
-                
-            if dte > 45:
+            if dte <= 0 or dte > 45:
                 continue
             dte_weight = max(0.1, (46 - dte) / 45.0)
             T = dte / 365.0
             
             opt_chain = stock.option_chain(exp_str)
-            
             call_res = process_chain_vectorized(opt_chain.calls, 'call', current_price, T, r_rate, dte_weight)
             put_res = process_chain_vectorized(opt_chain.puts, 'put', current_price, T, r_rate, dte_weight)
             
@@ -145,7 +137,7 @@ def load_and_compute_gex_engine(ticker, r_rate):
             if not put_res.empty: compiled_dfs.append(put_res)
             
         if not compiled_dfs:
-            return current_price, None, None, atm_iv_now, vix_delta_val, max_pain_val
+            return None, atm_iv_now, vix_delta_val, max_pain_val
             
         master_df = pd.concat(compiled_dfs, ignore_index=True)
         agg_df = master_df.groupby('strike').agg({
@@ -160,29 +152,21 @@ def load_and_compute_gex_engine(ticker, r_rate):
         est_tz = pytz.timezone('US/Eastern')
         fetch_timestamp = datetime.now(est_tz).strftime("%Y-%m-%d %I:%M:%S %p EST")
         
-        return current_price, agg_df, fetch_timestamp, atm_iv_now, vix_delta_val, max_pain_val
+        return agg_df, fetch_timestamp, atm_iv_now, vix_delta_val, max_pain_val
         
-    except Exception as e:
-        st.session_state['last_error'] = str(e)
-        return None, None, None, None, None, None
+    except Exception:
+        return None, None, None, None, None
 
-# --- 5. EXECUTION GUARD CONFIGURATION ---
-with st.spinner("Executing Vectorized Volatility Quant Matrices..."):
-    current_price, data_matrix, data_time, atm_iv, vix_delta, max_pain_strike = load_and_compute_gex_engine(ticker_input, risk_free_rate)
-
-if current_price is None:
-    st.error(f"❌ Failed to extract standard market ticker data info updates for {ticker_input}. Please check connection properties.")
-    if 'last_error' in st.session_state: st.code(st.session_state['last_error'])
-    st.stop()
+data_matrix, data_time, atm_iv, vix_delta, max_pain_strike = load_and_compute_gex_engine(ticker_input, risk_free_rate, current_price)
 
 if data_matrix is not None:
-    st.info(f"📅 **Data Freshness Timestamp:** {data_time} | {ticker_input} ATM Implied Vol: {atm_iv*100:.1f}%")
-
+    # --- TRUE ZERO-GAMMA COMPONENT ---
     agg_df_sorted = data_matrix.sort_values('strike').copy()
     agg_df_sorted['cumulative_GEX'] = agg_df_sorted['GEX'].cumsum()
     sign_changes = agg_df_sorted[(agg_df_sorted['cumulative_GEX'] * agg_df_sorted['cumulative_GEX'].shift(1) < 0)]
     zero_gamma_strike = sign_changes['strike'].iloc[0] if not sign_changes.empty else current_price
 
+    # Apply the UI visual zoom boundary constraints
     lower_bound = current_price * (1.0 - zoom_pct)
     upper_bound = current_price * (1.0 + zoom_pct)
     filtered_df = data_matrix[(data_matrix['strike'] >= lower_bound) & (data_matrix['strike'] <= upper_bound)].copy()
@@ -190,12 +174,11 @@ if data_matrix is not None:
     total_gex = filtered_df['GEX'].sum()
     total_vanna = filtered_df['Vanna'].sum()
     total_charm = filtered_df['Charm'].sum()
+    charm_shares = total_charm / current_price
     
-    auto_threshold_value = current_price * (max(0.005, min(0.035, atm_iv * 0.05)))
-    is_flip_zone = abs(current_price - zero_gamma_strike) <= auto_threshold_value
-    
-    vanna_active = vix_delta < -0.50
-    vanna_headwind = vix_delta > 0.50
+    # Check if price is danger-close to the tipping point (within 1.5% buffer)
+    pct_from_flip = (abs(current_price - zero_gamma_strike) / current_price)
+    is_approaching_zero = pct_from_flip <= 0.015
 
     def to_shorthand(value):
         abs_val = abs(value)
@@ -204,75 +187,58 @@ if data_matrix is not None:
         elif abs_val >= 1_000_000: return f"{sign_str}${abs_val / 1_000_000:.2f}M"
         elif abs_val >= 1_000: return f"{sign_str}${abs_val / 1_000:.2f}K"
         return f"{sign_str}${abs_val:.2f}"
-
-    gex_shorthand = to_shorthand(total_gex)
-    gex_action_direction = "BUY shares to stabilize drops" if total_gex >= 0 else "DUMP shares, accelerating drops"
-    
-    gex_tooltip_text = (
-        f"💡 ADHD Cheat Sheet:\n\n"
-        f"For every 1% that {ticker_input} moves up or down, market maker execution systems "
-        f"are mechanically forced to automatically {gex_action_direction} by an estimated value of {gex_shorthand}.\n\n"
-        f"• GREEN (+): Active price safety buffer.\n"
-        f"• RED (-): High-velocity momentum fuel."
-    )
+        
+    def to_shorthand_shares(value):
+        abs_val = abs(value)
+        sign_str = "-" if value < 0 else ""
+        if abs_val >= 1_000_000: return f"{sign_str}{abs_val / 1_000_000:.1f}M shares"
+        elif abs_val >= 1_000: return f"{sign_str}{abs_val / 1_000:.1f}K shares"
+        return f"{sign_str}{abs_val:.0f} shares"
 
     # --- DISPLAY METRICS MATRIX ---
     col1, col2, col3, col4 = st.columns(4)
     with col1:
         st.metric(label=f"Current {ticker_input} Price", value=f"${current_price:.2f}")
     with col2:
-        st.metric(label="Total Gamma Exposure ($ GEX)", value=gex_shorthand, help=gex_tooltip_text)
+        st.metric(label="Total Gamma Exposure ($ GEX)", value=to_shorthand(total_gex))
     with col3:
-        st.metric(label="Daily Charm Flow", value=to_shorthand(total_charm), help="Estimated value options market makers must buy/sell today from structural time decay parameters.")
+        st.metric(
+            label="Daily Charm Flow", 
+            value=to_shorthand(total_charm), 
+            delta=to_shorthand_shares(charm_shares),
+            delta_color="off" if charm_shares >= 0 else "inverse",
+            help="The small sub-number shows physical shares option dealers must trade today due to day-to-day options decay."
+        )
     with col4:
-        state_label = "⚡ FLIP ZONE" if is_flip_zone else ("🟢 POSITIVE GEX" if total_gex > 0 else "🔴 NEGATIVE GEX")
+        state_label = "⚡ FLIP ZONE" if is_approaching_zero else ("🟢 POSITIVE GEX" if total_gex > 0 else "🔴 NEGATIVE GEX")
         st.metric(label="System Status", value=state_label)
 
     st.caption(f"🎯 **True Cumulative Zero-Gamma Strike:** ${zero_gamma_strike:.2f} | **Gravitational Max Pain Anchor:** ${max_pain_strike if max_pain_strike else 'N/A'}")
     st.divider()
 
-    # --- 6. CONTAINER-SEPARATED PLAYBOOK EXECUTION LAYER ---
-    st.subheader("🎯 Active Execution Playbook")
-    
-    if vanna_active and total_vanna > 0:
-        st.success("🚀 **VANNA TAILWIND ACTIVE:** Implied Volatility compression is forcing dealers to buy delta to rebalance inventory. Flows support rallies.")
-    elif vanna_headwind and total_vanna > 0:
-        st.error("⚠️ **VANNA HEADWIND ACTIVE:** Spiking IV regime forcing systemic dealer spot liquidations.")
-
-    if is_flip_zone:
-        st.subheader(f"⚡️ SYSTEM STATUS: The Gamma Flip Node (${zero_gamma_strike:.2f})")
-        st.warning(f"""
-        * **The Reality:** Gravity offline. Computers are executing rapid directional inventory changes.
-        * 🚀 **UPWARD BREAKOUT:** Spot cross above **${zero_gamma_strike + auto_threshold_value:.2f}** -> **BUY Calls**.
-        * 📉 **DOWNWARD BREAKDOWN:** Spot slip below **${zero_gamma_strike - auto_threshold_value:.2f}** -> **BUY Puts**.
-        """)
-    elif total_gex > 0:
-        st.subheader("🟢 SYSTEM STATUS: Positive GEX (Mean-Reversion Field)")
-        st.success(f"Market tracking values confirm insulated status limits. Net positive accumulation metrics dominate near terminal bounds.")
-        tab1, tab2 = st.tabs(["💰 Premium Capture Checklist", "🛡️ Automated Dip Accumulation"])
-        with tab1:
-            st.markdown(f"""
-            * **DTE Target:** **30 to 45 Days**. Captures optimal performance along our accelerated **Charm decay metrics**.
-            * **Execution Rule:** Sell options premium structures safely outside the True Flip strike (**${zero_gamma_strike:.2f}**).
+    # --- 🧠 NEW: DYNAMIC ADHD TIPPING POINT WARNING SYSTEM ---
+    if is_approaching_zero:
+        st.markdown("### ⚠️ 🧠 ADHD ALERT: CRITICAL TIPPING POINT")
+        with st.container(border=True):
+            st.error(f"""
+            **The stock is currently within {pct_from_flip*100:.1f}% of the Zero-Gamma Tipping Point (${zero_gamma_strike:.2f}).**
+            
+            **What to expect right now:**
+            * 🛑 **High-Velocity Whipsaws:** Market computer algorithms are processing fast, contradictory inventory adjustments. Price movement can be erratic and rapid.
+            * 📉 **The Trap-Door Risk:** If the price slips fully underneath **${zero_gamma_strike:.2f}**, market makers switch from buyers to aggressive sellers. This turns small drops into sudden cascades.
+            * 🧠 **Your Guardrail Strategy:** Do not pick a direction blindly. Wait for a clean breakout or breakdown away from this price node before deploying capital.
             """)
-        with tab2:
-            st.markdown(f"**Execution Blueprint:** Deploy Cash-Secured Puts near the structural zero-gamma floor to let automated dealer buying absorb corrections for you.")
-    else:
-        st.subheader("🔴 SYSTEM STATUS: Negative GEX (Unpinned Volatility Cascades)")
-        st.error("🛑 **ADHD Guardrail:** Volatility expander active. No short options entries. Focus exclusively on **Long Puts** or **Long Volatility Exposure** to harvest accelerating cascades.")
+        st.divider()
 
-    st.divider()
-
-    # --- 7. PLOTLY CHART COMPONENT (WITH ADHD LABELS) ---
+    # --- 7. PLOTLY CHART COMPONENT (CLEAN NO OVERLAPS) ---
     st.subheader("📊 Cumulative Volatility Profile Architecture")
     
-    # ADHD Visual Guide Box
     with st.container(border=True):
         st.markdown("""
-        💡 **Quick Chart Guide to Eliminate Cognitive Overload:**
-        * 🟢 **Green Bars above 0:** Market makers are **Buying** to steady the market. Safe Zone.
-        * 🔴 **Red Bars below 0:** Market makers are **Selling** when price drops. Chaos/Fast Drops Zone.
-        * 🟡 **Yellow Line:** The trend line. Where it crosses **0** is the exact tipping point.
+        💡 **Quick Chart Guide:**
+        * **Blue Dashed Line:** Current Stock Price right now.
+        * **Purple Dotted Line:** The Tipping Point (0 Node). **Dangerous volatility expands if price falls under this.**
+        * **Yellow Solid Line:** Overall market trend. It crosses zero right at the Tipping Point line.
         """)
 
     chart_mode = st.radio("Display Profile Selection", ["Net GEX Profile", "Call / Put Distribution Split"], horizontal=True)
@@ -288,12 +254,12 @@ if data_matrix is not None:
     else:
         fig.add_trace(go.Bar(
             x=filtered_df['strike'], y=filtered_df['Call_GEX'],
-            marker_color='#2ecc71', name='Call Gamma GEX Exposure',
+            marker_color='#2ecc71', name='Call Gamma GEX',
             hovertemplate="Strike: %{x}<br>Call GEX: $ %{y:,.0f}<extra></extra>"
         ))
         fig.add_trace(go.Bar(
             x=filtered_df['strike'], y=filtered_df['Put_GEX'],
-            marker_color='#e74c3c', name='Put Gamma GEX Exposure',
+            marker_color='#e74c3c', name='Put Gamma GEX',
             hovertemplate="Strike: %{x}<br>Put GEX: $ %{y:,.0f}<extra></extra>"
         ))
         fig.update_layout(barmode='group')
@@ -303,49 +269,26 @@ if data_matrix is not None:
     
     fig.add_trace(go.Scatter(
         x=df_sorted_display['strike'], y=df_sorted_display['cum_GEX_display'],
-        line=dict(color='#f1c40f', width=3), name='Cumulative GEX Profile Line'
+        line=dict(color='#f1c40f', width=3), name='Cumulative GEX (Yellow Line)'
     ))
     
-    # Lines & Static Position Overlays
-    fig.add_vline(x=current_price, line_dash="dash", line_color="#3498db", line_width=2, annotation_text=" SPOT (Price Now) ")
-    fig.add_vline(x=zero_gamma_strike, line_dash="dot", line_color="#9b59b6", line_width=2, annotation_text=" TRUE FLIP NODE ")
+    # Clean structural markers mapped to the custom legend box
+    fig.add_vline(x=current_price, line_dash="dash", line_color="#3498db", line_width=2.5)
+    fig.add_vline(x=zero_gamma_strike, line_dash="dot", line_color="#9b59b6", line_width=2.5)
     if max_pain_strike:
-        fig.add_vline(x=max_pain_strike, line_dash="dot", line_color="#e67e22", line_width=2, annotation_text=" MAX PAIN ")
+        fig.add_vline(x=max_pain_strike, line_dash="dot", line_color="#e67e22", line_width=2)
         
-    # --- ADHD FIELD ANNOTATIONS (HIGH CONTRAST SHADED TEXT BOXES) ---
-    max_y_val = max(abs(filtered_df['GEX'].max()), abs(filtered_df['GEX'].min())) if not filtered_df.empty else 1e6
-    
-    fig.add_annotation(
-        x=upper_bound - (zoom_pct * current_price * 0.25),
-        y=max_y_val * 0.75,
-        text="🟢 SAFE ZONE<br>Dealers stabilize asset prices",
-        showarrow=False,
-        font=dict(size=12, color="#2ecc71"),
-        bordercolor="#2ecc71",
-        borderwidth=1,
-        borderpad=4,
-        bgcolor="#1e1e1e",
-        opacity=0.85
-    )
-    
-    fig.add_annotation(
-        x=lower_bound + (zoom_pct * current_price * 0.25),
-        y=-max_y_val * 0.75,
-        text="🔴 ACCELERATION ZONE<br>Fast spikes & sharp cascades",
-        showarrow=False,
-        font=dict(size=12, color="#e74c3c"),
-        bordercolor="#e74c3c",
-        borderwidth=1,
-        borderpad=4,
-        bgcolor="#1e1e1e",
-        opacity=0.85
-    )
+    # Legend mapping keys to isolate labels off the plotted line values
+    fig.add_trace(go.Scatter(x=[None], y=[None], mode='lines', line=dict(color='#3498db', dash='dash'), name='BLUE LINE = Price Now'))
+    fig.add_trace(go.Scatter(x=[None], y=[None], mode='lines', line=dict(color='#9b59b6', dash='dot'), name='PURPLE LINE = Tipping Point (0)'))
+    if max_pain_strike:
+        fig.add_trace(go.Scatter(x=[None], y=[None], mode='lines', line=dict(color='#e67e22', dash='dot'), name='ORANGE LINE = Max Pain Level'))
         
     fig.update_layout(
         template="plotly_dark",
-        xaxis_title="Strike Price ($)", yaxis_title="Structural Exposure Capacity ($)",
-        margin=dict(l=20, r=20, t=20, b=20), height=550,
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+        xaxis_title="Strike Price ($)", yaxis_title="Exposure Capacity ($)",
+        margin=dict(l=25, r=25, t=25, b=25), height=550,
+        legend=dict(orientation="v", yanchor="top", y=0.98, xanchor="left", x=0.02, bgcolor="rgba(30,30,30,0.8)")
     )
     st.plotly_chart(fig, use_container_width=True)
 else:
