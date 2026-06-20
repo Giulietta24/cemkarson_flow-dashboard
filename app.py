@@ -23,7 +23,6 @@ with st.sidebar:
     zoom_pct = st.slider("Chart Zoom Window (±%)", min_value=3, max_value=15, value=6, step=1) / 100.0
     risk_free_rate = st.number_input("Risk-Free Rate (r)", value=0.05, step=0.01)
 
-    # --- QUICK-LOOK CHEAT SHEET ---
     st.markdown("---")
     st.subheader("🧠 2-Second Cheat Sheet Playbook")
     with st.container(border=True):
@@ -97,7 +96,7 @@ def calculate_max_pain_vectorized(opt_chain):
     except Exception:
         return None
 
-# --- 5. HUMAN-READABLE METRIC SCALING COMPONENT ---
+# --- 5. HUMAN-READABLE METRIC SCALING ---
 def format_scaled_exposure(val):
     abs_val = abs(val)
     sign = "-" if val < 0 else ""
@@ -120,7 +119,6 @@ def format_scaled_shares(val):
 with st.spinner("Executing Volatility Quant Matrices..."):
     try:
         stock = yf.Ticker(ticker_input)
-        # Resilient price fallback cascade
         current_price = stock.fast_info.get('last_price')
         if current_price is None or np.isnan(current_price):
             current_price = stock.info.get('regularMarketPrice')
@@ -132,7 +130,7 @@ with st.spinner("Executing Volatility Quant Matrices..."):
         current_price = None
 
 if current_price is None or np.isnan(current_price):
-    st.error(f"❌ Failed to extract market price updates for {ticker_input}. Yahoo Finance API might be throttled or encountering downtime.")
+    st.error(f"❌ Failed to extract market price updates for {ticker_input}.")
     st.stop()
 
 @st.cache_data(ttl=300)
@@ -184,4 +182,5 @@ def load_and_compute_gex_engine(ticker, r_rate, current_price):
             'GEX': 'sum', 'Vanna': 'sum', 'Charm': 'sum', 'IV_Raw': 'mean'
         }).reset_index()
         
-        raw_call_split = master_df[master_df['Option_Type'] == 'call'].groupby('strike')
+        raw_call_split = master_df[master_df['Option_Type'] == 'call'].groupby('strike')['GEX'].sum().rename('Call_GEX').reset_index()
+        raw_put_split = master_df[master_df['Option_Type'] == 'put'].groupby('strike')['GEX'].sum().rename('
