@@ -7,15 +7,44 @@ from scipy.stats import norm
 from datetime import datetime
 import pytz
 
-# --- 1. PAGE SETUP & THEME HANDLING ---
+# --- 1. PAGE SETUP & CONFIGURATION ---
 st.set_page_config(page_title="GEX Flow Dashboard", layout="wide", initial_sidebar_state="expanded")
 
 st.title("📊 SPY Structural Flow Dashboard")
 st.caption("Tracking Options Market Maker Hedging Constraints.")
 
-st.warning("⚠️ **Disclaimer:** This dashboard is for educational and research purposes only. Options trading involves significant risk. This is not financial, legal, or tax advice.")
+# --- 2. THE PERSISTENT ADHD LEFT SIDEBAR PANEL ---
+with st.sidebar:
+    st.header("🎛️ Controls & Parameters")
+    ticker_input = st.text_input(label="Target Ticker Symbol", value="SPY").upper()
+    
+    st.markdown("---")
+    st.subheader("⚙️ Model Settings")
+    zoom_pct = st.slider("Chart Zoom Window (±%)", min_value=3, max_value=15, value=6, step=1) / 100.0
+    risk_free_rate = st.number_input("Risk-Free Rate (r)", value=0.05, step=0.01)
 
-# --- 2. HIGH-SPEED VECTORIZED QUANT ENGINE ---
+    # --- THE RESTORED ADHD QUICK-LOOK CHEAT SHEET ---
+    st.markdown("---")
+    st.subheader("🧠 2-Second Cheat Sheet Playbook")
+    with st.container(border=True):
+        st.markdown("""
+        **🟢 Above Purple Line (Calm Zone):**
+        * Market is stable.
+        * Market maker programs buy dips and sell rallies.
+        * Bias favors premium sellers and steady bounces.
+        
+        **🔴 Below Purple Line (Danger Zone):**
+        * Slippery slope.
+        * Market maker programs sell drops and follow momentum.
+        * Expect wider swings and fast directional extension.
+        
+        **⚡ Stacking Directly On the Line:**
+        * High variance zone.
+        * Fast algorithmic cross-currents.
+        * Hands off the keyboard until a breakout side is chosen!
+        """)
+
+# --- 3. HIGH-SPEED VECTORIZED QUANT ENGINE ---
 def process_chain_vectorized(df, option_type, S, T, r_rate, dte_weight):
     df = df[['strike', 'openInterest', 'impliedVolatility']].copy()
     df = df[(df['openInterest'] > 0) & (df['impliedVolatility'] > 0)].copy()
@@ -35,9 +64,8 @@ def process_chain_vectorized(df, option_type, S, T, r_rate, dte_weight):
         gamma = np.nan_to_num(pdf_d1 / (S * iv * np.sqrt(T)), nan=0.0, posinf=0.0)
         vanna = np.nan_to_num(-pdf_d1 * (d2 / iv), nan=0.0, posinf=0.0)
         
-        # --- QUANT VALIDATION NOTE ---
-        # Charm sign convention design choice: Representing delta decay per calendar day.
-        # Negative value implies long call/put absolute delta magnitude decreases over time as maturity approaches.
+        # NOTE: Charm sign convention tracking delta decay per calendar day.
+        # Negative value implies absolute delta magnitude decreases over time.
         charm = np.nan_to_num(pdf_d1 * (r_rate / (iv * np.sqrt(T)) - (d1 * d2) / (2 * T)) * (-1.0 / 365.0), nan=0.0, posinf=0.0)
         
         sign = 1.0 if option_type == 'call' else -1.0
@@ -50,7 +78,7 @@ def process_chain_vectorized(df, option_type, S, T, r_rate, dte_weight):
     
     return df[['strike', 'GEX', 'Vanna', 'Charm', 'IV_Raw', 'Option_Type']]
 
-# --- 3. VECTORIZED MAX PAIN ENGINE ---
+# --- 4. VECTORIZED MAX PAIN ENGINE ---
 def calculate_max_pain_vectorized(opt_chain):
     try:
         calls = opt_chain.calls[['strike', 'openInterest']].dropna()
@@ -61,13 +89,10 @@ def calculate_max_pain_vectorized(opt_chain):
         if len(strikes) == 0:
             return None
             
-        c_strikes = calls['strike'].values
-        c_oi = calls['openInterest'].values
-        p_strikes = puts['strike'].values
-        p_oi = puts['openInterest'].values
+        c_strikes, c_oi = calls['strike'].values, calls['openInterest'].values
+        p_strikes, p_oi = puts['strike'].values, puts['openInterest'].values
         
         strikes_col = strikes[:, np.newaxis]
-        
         call_loss = np.maximum(c_strikes - strikes_col, 0) * c_oi * 100
         put_loss = np.maximum(strikes_col - p_strikes, 0) * p_oi * 100
         
@@ -76,33 +101,8 @@ def calculate_max_pain_vectorized(opt_chain):
     except Exception:
         return None
 
-# --- 4. SIDEBAR CONTROLS & RESTORED ADHD PLAYBOOK ---
-with st.sidebar:
-    st.header("🎛️ Parameters")
-    ticker_input = st.text_input(label="Target Ticker Symbol", value="SPY").upper()
-    
-    st.markdown("---")
-    st.subheader("⚙️ Model Settings")
-    zoom_pct = st.slider("Chart Zoom Window (±%)", min_value=3, max_value=15, value=6, step=1) / 100.0
-    risk_free_rate = st.number_input("Risk-Free Rate (r)", value=0.05, step=0.01)
-
-    # --- RESTORED PERSISTENT ADHD REFERENCE ENGINE ---
-    st.markdown("---")
-    st.subheader("🧠 2-Second Cheat Sheet Playbook")
-    with st.container(border=True):
-        st.markdown("""
-        **🟢 Above Purple Line (Calm Zone):**
-        Market is highly stable. Intermediary machines sell rallies and buy dips. bias favors premium sellers and standard bounces.
-        
-        **🔴 Below Purple Line (Danger Zone):**
-        Slippery slope. Intermediary machines are forced to sell drops and chase momentum, triggering wider swings.
-        
-        **⚡ Stacking Directly On the Line:**
-        Total randomness and algorithm fighting. Keep your hands off the keyboard and wait for a breakout direction!
-        """)
-
-# --- 5. DATA ENGINE ---
-with st.spinner("Executing Vectorized Volatility Quant Matrices..."):
+# --- 5. DATA INGESTION ENGINE ---
+with st.spinner("Executing Volatility Quant Matrices..."):
     try:
         stock = yf.Ticker(ticker_input)
         current_price = stock.fast_info.get('last_price') or stock.info.get('regularMarketPrice')
@@ -137,9 +137,9 @@ def load_and_compute_gex_engine(ticker, r_rate, current_price):
             try:
                 exp_date = datetime.strptime(exp_str, "%Y-%m-%d").date()
                 dte = (exp_date - today).days
-                
                 if dte <= 0 or dte > 45:
                     continue
+                    
                 dte_weight = max(0.1, (46 - dte) / 45.0)
                 T = dte / 365.0
                 
@@ -157,10 +157,10 @@ def load_and_compute_gex_engine(ticker, r_rate, current_price):
             
         master_df = pd.concat(compiled_dfs, ignore_index=True)
         
-        # --- IMPROVEMENT: FILTER ILLIQUID STRIKES BEFORE GLOBAL ZERO-GAMMA CALCULATION ---
+        # --- IMPROVEMENT: MINIMUM OPEN INTEREST FILTER TO DROPDOWN OTM NOISE ---
         master_df = master_df[master_df.groupby('strike')['GEX'].transform('sum').abs() > 10000]
         
-        # --- ARCHITECTURE DESIGN CHOICE NOTE ---
+        # --- AGGREGATION & SEPARATE CALL/PUT RESTORATION ENGINE ---
         agg_df = master_df.groupby('strike').agg({
             'GEX': 'sum', 'Vanna': 'sum', 'Charm': 'sum', 'IV_Raw': 'mean'
         }).reset_index()
@@ -174,12 +174,12 @@ def load_and_compute_gex_engine(ticker, r_rate, current_price):
         fetch_timestamp = datetime.now(est_tz).strftime("%I:%M %p EST")
         
         return agg_df, atm_iv_now, max_pain_val, fetch_timestamp
-        
     except Exception:
         return None, None, None, None
 
 data_matrix, atm_iv, max_pain_strike, data_time = load_and_compute_gex_engine(ticker_input, risk_free_rate, current_price)
 
+# --- 6. DASHBOARD MAIN DISPLAY REGIME ---
 if data_matrix is not None:
     agg_df_sorted = data_matrix.sort_values('strike').copy()
     agg_df_sorted['cumulative_GEX'] = agg_df_sorted['GEX'].cumsum()
@@ -194,7 +194,7 @@ if data_matrix is not None:
     pct_from_flip = (abs(current_price - zero_gamma_strike) / current_price)
     is_approaching_zero = pct_from_flip <= 0.01
 
-    # --- DISPLAY METRICS MATRIX ---
+    # --- SCOREBOARD METRICS MATRIX ---
     col1, col2, col3 = st.columns(3)
     with col1:
         st.metric(label=f"Current {ticker_input} Price", value=f"${current_price:.2f}")
@@ -213,13 +213,13 @@ if data_matrix is not None:
     # --- STRUCTURAL PLAYBOOK GUIDELINES ---
     st.subheader("🎯 Structural Playbook Guidelines")
     
-    # --- IMPROVEMENT: BALANCED INFRASTRUCTURE CONTRAST (st.warning instead of st.error) ---
+    # IMPROVEMENT: Use balanced st.warning instead of aggressive error messages for transition boundaries
     if is_approaching_zero:
-        st.warning(f"🚨 **MODEL SIGNAL: TRANSITION ZONE RANGE INTRUSION.** Price is within {pct_from_flip*100:.1f}% of the calculated Zero-Gamma node (${zero_gamma_strike:.2f}). Historic baseline metrics reflect increased asset variance and less deterministic order-book depth.")
+        st.warning(f"🚨 **MODEL SIGNAL: TRANSITION ZONE RANGE INTRUSION.** Price is within {pct_from_flip*100:.1f}% of the calculated Zero-Gamma node (${zero_gamma_strike:.2f}). Historic baseline metrics reflect increased asset variance.")
     else:
         st.info(f"ℹ️ **Tipping Point Proximity:** Price is currently {pct_from_flip*100:.1f}% away from the calculated Zero-Gamma Strike (${zero_gamma_strike:.2f}).")
 
-    # --- IMPROVEMENT: DATA QUALITY DENSITY WARNING ---
+    # IMPROVEMENT: High noise alert if filtered display size is too small
     if len(filtered_df) < 5:
         st.warning("⚠️ **DATA QUALITY NOTICE:** Low strike density detected inside current zoom window. Results may appear noisy or truncated.")
 
@@ -267,4 +267,29 @@ if data_matrix is not None:
             hovertemplate="Strike: %{x}<br>Call GEX: $ %{y:,.0f}<extra></extra>"
         ))
         fig.add_trace(go.Bar(
-            x=filtered_df['strike'], y=filtered_df
+            x=filtered_df['strike'], y=filtered_df['Put_GEX'],
+            marker_color='#e74c3c', showlegend=False,
+            hovertemplate="Strike: %{x}<br>Put GEX: $ %{y:,.0f}<extra></extra>"
+        ))
+        fig.update_layout(barmode='group')
+    
+    df_sorted_display = data_matrix[(data_matrix['strike'] >= lower_bound) & (data_matrix['strike'] <= upper_bound)].sort_values('strike').copy()
+    df_sorted_display['cum_GEX_display'] = df_sorted_display['GEX'].cumsum()
+    
+    fig.add_trace(go.Scatter(
+        x=df_sorted_display['strike'], y=df_sorted_display['cum_GEX_display'],
+        line=dict(color='#f1c40f', width=3), showlegend=False
+    ))
+    
+    fig.add_vline(x=current_price, line_dash="dash", line_color="#3498db", line_width=2.5)
+    fig.add_vline(x=zero_gamma_strike, line_dash="dot", line_color="#9b59b6", line_width=2.5)
+        
+    fig.update_layout(
+        template="plotly_dark",
+        xaxis_title="Strike Price ($)", yaxis_title="Running Exposure Capacity Sum ($)",
+        margin=dict(l=40, r=40, t=20, b=40), height=600,
+        showlegend=False
+    )
+    st.plotly_chart(fig, use_container_width=True)
+else:
+    st.error("❌ Data matrix parsing execution failed.")
