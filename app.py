@@ -332,17 +332,21 @@ elif vix_delta_val > 0.50:
         f"one of the most dangerous structural combinations — it turns a normal selloff into a cascade."
     )
 
+
 # --- 13. CHARM DAILY FLOW WITH EXPLANATION ---
-charm_display  = format_scaled_exposure(total_charm)
+charm_display   = format_scaled_exposure(total_charm)
 charm_direction = "buying" if total_charm > 0 else "selling"
-st.markdown(
-    f"<small>⏱️ <b>Daily Charm Flow: {charm_display}</b> — "
-    f"Charm measures how much dealer delta decays from time passing alone (independent of price or vol moves). "
-    f"Today's time decay forces dealers to mechanically {charm_direction} an estimated "
+
+charm_html = (
+    f"⏱️ <b>Daily Charm Flow: {charm_display}</b> — "
+    f"Charm measures how much dealer delta decays from time passing alone "
+    f"(independent of price or vol moves). "
+    f"Today's time decay forces dealers to mechanically <b>{charm_direction}</b> an estimated "
     f"<b>{charm_display}</b> worth of underlying stock purely to stay delta-neutral. "
-    f"This flow happens every trading day on autopilot regardless of market direction.</small>",
-    unsafe_allow_html=True
+    f"This flow happens every trading day on autopilot regardless of market direction."
 )
+
+st.markdown(f"<small>{charm_html}</small>", unsafe_allow_html=True)
 
 st.divider()
 
