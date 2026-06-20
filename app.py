@@ -11,7 +11,7 @@ import pytz
 st.set_page_config(page_title="GEX Flow Dashboard", layout="wide", initial_sidebar_state="expanded")
 
 st.title("📊 Structural Flow & GEX Dashboard")
-st.caption("Institutional-grade mapping of options market maker hedging constraints (Gamma, Vanna, Charm).")
+st.caption("Institutional-grade mapping of options market maker hedging constraints.")
 
 st.warning("⚠️ **Disclaimer:** This dashboard is for educational and research purposes only. Options trading involves significant risk. This is not financial, legal, or tax advice.")
 
@@ -69,17 +69,32 @@ def calculate_max_pain_vectorized(opt_chain):
     except Exception:
         return None
 
-# --- SIDEBAR CONTROLS ---
+# --- SIDEBAR CONTROLS & PERSISTENT ADHD REFERENCE ---
 with st.sidebar:
     st.header("🎛️ Parameters")
-    ticker_input = st.text_input(label="Target Ticker Symbol", value="SPY").upper()
+    ticker_input = st.text_input(label="Target Ticker Symbol", value="BB").upper()
     
     st.markdown("---")
     st.subheader("⚙️ Model Settings")
     zoom_pct = st.slider("Chart Zoom Window (±%)", min_value=3, max_value=15, value=8, step=1) / 100.0
     risk_free_rate = st.number_input("Risk-Free Rate (r)", value=0.05, step=0.01)
 
-# --- 4. DATA ENGINE ---
+    st.markdown("---")
+    st.subheader("🧠 Playbook Cheat Sheet")
+    # Added your complete requested explanations to the side panel as a permanent reference
+    with st.container(border=True):
+        st.markdown("""
+        **🟢 Above 0 (Positive Gamma Zone):**
+        The market has **"gravity."** If the stock price drops, market makers are forced to *buy shares* to hedge, pushing the price back up. Volatility is suppressed, and moves are slow.
+        
+        **🔴 Below 0 (Negative Gamma Zone):**
+        **Gravity turns off**, and rocket boosters turn on in reverse. If the price drops past this point, market maker algorithms are forced to *sell shares* to hedge. Their selling forces it lower, causing more selling. Flash crashes happen here.
+        
+        **⚡ The Danger Zone:**
+        When the **Blue Line (Price)** gets very close to the **Purple Line (Tipping Point)**, the market becomes highly unpredictable. Expect sudden, violent intraday whipsaws.
+        """)
+
+# --- 4. DATA ENGINE (FIXED CACHING BUG) ---
 with st.spinner("Executing Vectorized Volatility Quant Matrices..."):
     try:
         stock = yf.Ticker(ticker_input)
@@ -91,13 +106,14 @@ if current_price is None:
     st.error(f"❌ Failed to extract market price updates for {ticker_input}.")
     st.stop()
 
+# FIX: Removed raw yfinance object from the cache return variables to avoid UnserializableReturnValueError
 @st.cache_data(ttl=300)
 def load_and_compute_gex_engine(ticker, r_rate, current_price):
     try:
         stock = yf.Ticker(ticker)
         expirations = stock.options
         if not expirations:
-            return None, None, None, None
+            return None, None, None, None, None
             
         try:
             near_exp = expirations[0]
@@ -137,7 +153,7 @@ def load_and_compute_gex_engine(ticker, r_rate, current_price):
             if not put_res.empty: compiled_dfs.append(put_res)
             
         if not compiled_dfs:
-            return None, atm_iv_now, vix_delta_val, max_pain_val
+            return None, atm_iv_now, vix_delta_val, max_pain_val, "No Data"
             
         master_df = pd.concat(compiled_dfs, ignore_index=True)
         agg_df = master_df.groupby('strike').agg({
@@ -166,17 +182,14 @@ if data_matrix is not None:
     sign_changes = agg_df_sorted[(agg_df_sorted['cumulative_GEX'] * agg_df_sorted['cumulative_GEX'].shift(1) < 0)]
     zero_gamma_strike = sign_changes['strike'].iloc[0] if not sign_changes.empty else current_price
 
-    # Apply the UI visual zoom boundary constraints
     lower_bound = current_price * (1.0 - zoom_pct)
     upper_bound = current_price * (1.0 + zoom_pct)
     filtered_df = data_matrix[(data_matrix['strike'] >= lower_bound) & (data_matrix['strike'] <= upper_bound)].copy()
 
     total_gex = filtered_df['GEX'].sum()
-    total_vanna = filtered_df['Vanna'].sum()
     total_charm = filtered_df['Charm'].sum()
     charm_shares = total_charm / current_price
     
-    # Check if price is danger-close to the tipping point (within 1.5% buffer)
     pct_from_flip = (abs(current_price - zero_gamma_strike) / current_price)
     is_approaching_zero = pct_from_flip <= 0.015
 
@@ -206,8 +219,7 @@ if data_matrix is not None:
             label="Daily Charm Flow", 
             value=to_shorthand(total_charm), 
             delta=to_shorthand_shares(charm_shares),
-            delta_color="off" if charm_shares >= 0 else "inverse",
-            help="The small sub-number shows physical shares option dealers must trade today due to day-to-day options decay."
+            delta_color="off" if charm_shares >= 0 else "inverse"
         )
     with col4:
         state_label = "⚡ FLIP ZONE" if is_approaching_zero else ("🟢 POSITIVE GEX" if total_gex > 0 else "🔴 NEGATIVE GEX")
@@ -216,30 +228,14 @@ if data_matrix is not None:
     st.caption(f"🎯 **True Cumulative Zero-Gamma Strike:** ${zero_gamma_strike:.2f} | **Gravitational Max Pain Anchor:** ${max_pain_strike if max_pain_strike else 'N/A'}")
     st.divider()
 
-    # --- 🧠 NEW: DYNAMIC ADHD TIPPING POINT WARNING SYSTEM ---
+    # Dynamic Danger-Close Notification
     if is_approaching_zero:
-        st.markdown("### ⚠️ 🧠 ADHD ALERT: CRITICAL TIPPING POINT")
-        with st.container(border=True):
-            st.error(f"""
-            **The stock is currently within {pct_from_flip*100:.1f}% of the Zero-Gamma Tipping Point (${zero_gamma_strike:.2f}).**
-            
-            **What to expect right now:**
-            * 🛑 **High-Velocity Whipsaws:** Market computer algorithms are processing fast, contradictory inventory adjustments. Price movement can be erratic and rapid.
-            * 📉 **The Trap-Door Risk:** If the price slips fully underneath **${zero_gamma_strike:.2f}**, market makers switch from buyers to aggressive sellers. This turns small drops into sudden cascades.
-            * 🧠 **Your Guardrail Strategy:** Do not pick a direction blindly. Wait for a clean breakout or breakdown away from this price node before deploying capital.
-            """)
+        st.markdown("### ⚡️ SYSTEM STATUS: Approaching the Tipping Point!")
+        st.warning(f"**Heads Up:** The current price is only {pct_from_flip*100:.1f}% away from the Zero-Gamma line (${zero_gamma_strike:.2f}). Check the sidebar cheat sheet to see why volatility might get erratic here!")
         st.divider()
 
-    # --- 7. PLOTLY CHART COMPONENT (CLEAN NO OVERLAPS) ---
+    # --- 7. PLOTLY CHART COMPONENT (CLEAN LEGEND PLACEMENT) ---
     st.subheader("📊 Cumulative Volatility Profile Architecture")
-    
-    with st.container(border=True):
-        st.markdown("""
-        💡 **Quick Chart Guide:**
-        * **Blue Dashed Line:** Current Stock Price right now.
-        * **Purple Dotted Line:** The Tipping Point (0 Node). **Dangerous volatility expands if price falls under this.**
-        * **Yellow Solid Line:** Overall market trend. It crosses zero right at the Tipping Point line.
-        """)
 
     chart_mode = st.radio("Display Profile Selection", ["Net GEX Profile", "Call / Put Distribution Split"], horizontal=True)
     
@@ -272,23 +268,29 @@ if data_matrix is not None:
         line=dict(color='#f1c40f', width=3), name='Cumulative GEX (Yellow Line)'
     ))
     
-    # Clean structural markers mapped to the custom legend box
     fig.add_vline(x=current_price, line_dash="dash", line_color="#3498db", line_width=2.5)
     fig.add_vline(x=zero_gamma_strike, line_dash="dot", line_color="#9b59b6", line_width=2.5)
     if max_pain_strike:
         fig.add_vline(x=max_pain_strike, line_dash="dot", line_color="#e67e22", line_width=2)
         
-    # Legend mapping keys to isolate labels off the plotted line values
-    fig.add_trace(go.Scatter(x=[None], y=[None], mode='lines', line=dict(color='#3498db', dash='dash'), name='BLUE LINE = Price Now'))
-    fig.add_trace(go.Scatter(x=[None], y=[None], mode='lines', line=dict(color='#9b59b6', dash='dot'), name='PURPLE LINE = Tipping Point (0)'))
+    # FIX: Moved legend items explicitly into a clean vertical sidebar layout inside the chart container to resolve the overlapping grey boxes
+    fig.add_trace(go.Scatter(x=[None], y=[None], mode='lines', line=dict(color='#3498db', dash='dash'), name='🔵 BLUE LINE = Price Now'))
+    fig.add_trace(go.Scatter(x=[None], y=[None], mode='lines', line=dict(color='#9b59b6', dash='dot'), name='🟣 PURPLE LINE = Tipping Point (0)'))
     if max_pain_strike:
-        fig.add_trace(go.Scatter(x=[None], y=[None], mode='lines', line=dict(color='#e67e22', dash='dot'), name='ORANGE LINE = Max Pain Level'))
+        fig.add_trace(go.Scatter(x=[None], y=[None], mode='lines', line=dict(color='#e67e22', dash='dot'), name='🟠 ORANGE LINE = Max Pain Level'))
         
     fig.update_layout(
         template="plotly_dark",
         xaxis_title="Strike Price ($)", yaxis_title="Exposure Capacity ($)",
         margin=dict(l=25, r=25, t=25, b=25), height=550,
-        legend=dict(orientation="v", yanchor="top", y=0.98, xanchor="left", x=0.02, bgcolor="rgba(30,30,30,0.8)")
+        legend=dict(
+            orientation="v", 
+            yanchor="top", y=0.98, 
+            xanchor="left", x=0.02, 
+            bgcolor="rgba(20,20,20,0.9)",
+            bordercolor="rgba(255,255,255,0.1)",
+            borderwidth=1
+        )
     )
     st.plotly_chart(fig, use_container_width=True)
 else:
