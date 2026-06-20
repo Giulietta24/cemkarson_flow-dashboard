@@ -120,12 +120,19 @@ def format_scaled_shares(val):
 with st.spinner("Executing Volatility Quant Matrices..."):
     try:
         stock = yf.Ticker(ticker_input)
-        current_price = stock.fast_info.get('last_price') or stock.info.get('regularMarketPrice')
+        # Resilient price fallback cascade
+        current_price = stock.fast_info.get('last_price')
+        if current_price is None or np.isnan(current_price):
+            current_price = stock.info.get('regularMarketPrice')
+        if current_price is None or np.isnan(current_price):
+            hist = stock.history(period="1d")
+            if not hist.empty:
+                current_price = float(hist['Close'].iloc[-1])
     except Exception:
         current_price = None
 
-if current_price is None:
-    st.error(f"❌ Failed to extract market price updates for {ticker_input}.")
+if current_price is None or np.isnan(current_price):
+    st.error(f"❌ Failed to extract market price updates for {ticker_input}. Yahoo Finance API might be throttled or encountering downtime.")
     st.stop()
 
 @st.cache_data(ttl=300)
@@ -177,21 +184,4 @@ def load_and_compute_gex_engine(ticker, r_rate, current_price):
             'GEX': 'sum', 'Vanna': 'sum', 'Charm': 'sum', 'IV_Raw': 'mean'
         }).reset_index()
         
-        raw_call_split = master_df[master_df['Option_Type'] == 'call'].groupby('strike')['GEX'].sum().rename('Call_GEX').reset_index()
-        raw_put_split = master_df[master_df['Option_Type'] == 'put'].groupby('strike')['GEX'].sum().rename('Put_GEX').reset_index()
-        split_matrix = pd.merge(raw_call_split, raw_put_split, on='strike', how='outer').fillna(0.0)
-        agg_df = pd.merge(agg_df, split_matrix, on='strike', how='left').fillna(0.0)
-        
-        est_tz = pytz.timezone('US/Eastern')
-        fetch_timestamp = datetime.now(est_tz).strftime("%I:%M %p EST")
-        
-        return agg_df, atm_iv_now, max_pain_val, fetch_timestamp
-    except Exception:
-        return None, None, None, None
-
-data_matrix, atm_iv, max_pain_strike, data_time = load_and_compute_gex_engine(ticker_input, risk_free_rate, current_price)
-
-# --- 7. DASHBOARD MAIN DISPLAY REGIME ---
-if data_matrix is not None:
-    agg_df_sorted = data_matrix.sort_values('strike').copy()
-    agg_df_sorted['cumulative_GEX'] = agg_df_sorted['GEX'].cumsum()
+        raw_call_split = master_df[master_df['Option_Type'] == 'call'].groupby('strike')
