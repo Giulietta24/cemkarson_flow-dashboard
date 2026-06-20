@@ -17,10 +17,6 @@ st.warning("⚠️ **Disclaimer:** This dashboard is for educational and researc
 
 # --- 2. HIGH-SPEED VECTORIZED QUANT ENGINE ---
 def process_chain_vectorized(df, option_type, S, T, r_rate, dte_weight):
-    """
-    Vectorized Black-Scholes Greeks Engine over raw NumPy arrays.
-    FIX 4: Added explicit np.nan_to_num guard directly inside the calculation block.
-    """
     df = df[['strike', 'openInterest', 'impliedVolatility']].copy()
     df = df[(df['openInterest'] > 0) & (df['impliedVolatility'] > 0)].copy()
     if df.empty:
@@ -34,7 +30,6 @@ def process_chain_vectorized(df, option_type, S, T, r_rate, dte_weight):
         d1 = (np.log(S / K) + (r_rate + 0.5 * iv**2) * T) / (iv * np.sqrt(T))
         d2 = d1 - iv * np.sqrt(T)
         
-        # Guarded NumPy arrays against mathematical infinities or NaNs on extreme out-of-the-money options strikes
         gamma = np.nan_to_num(norm.pdf(d1) / (S * iv * np.sqrt(T)), nan=0.0, posinf=0.0)
         vanna = np.nan_to_num(-norm.pdf(d1) * (d2 / iv), nan=0.0, posinf=0.0)
         charm = np.nan_to_num(norm.pdf(d1) * (r_rate / (iv * np.sqrt(T)) - (d1 * d2) / (2 * T)) * (-1.0 / 365.0), nan=0.0, posinf=0.0)
@@ -48,11 +43,8 @@ def process_chain_vectorized(df, option_type, S, T, r_rate, dte_weight):
     
     return df[['strike', 'GEX', 'Vanna', 'Charm', 'IV_Raw']]
 
-# --- 3. VECTORIZED MAX PAIN ENGINE (FIX 1) ---
+# --- 3. VECTORIZED MAX PAIN ENGINE ---
 def calculate_max_pain_vectorized(opt_chain):
-    """
-    FIX 1: Fully vectorized Max Pain array algorithm to completely eliminate nested loops.
-    """
     try:
         calls = opt_chain.calls[['strike', 'openInterest']].dropna()
         puts = opt_chain.puts[['strike', 'openInterest']].dropna()
@@ -77,7 +69,7 @@ def calculate_max_pain_vectorized(opt_chain):
     except Exception:
         return None
 
-# --- SIDEBAR CONTROLS & PERSISTENT MENTAL MODEL ANCHOR ---
+# --- SIDEBAR CONTROLS & MENTAL MODEL ANCHOR ---
 with st.sidebar:
     st.header("🎛️ Parameters")
     ticker_input = st.text_input(label="Target Ticker Symbol", value="SPY").upper()
@@ -91,20 +83,16 @@ with st.sidebar:
     st.subheader("🧠 Playbook Quick Anchor")
     with st.container(border=True):
         st.markdown("""
-        **🟢 Positive GEX Setup:**
-        * Dealers net **long** gamma. They buy dips and sell rallies. Volatility dampening environment.
+        **🟢 Positive GEX Zone:**
+        * Market is insulated. Volatility is suppressed. Expect mean reversion.
         
-        **🔴 Negative GEX Setup:**
-        * Dealers net **short** gamma. They sell drops and buy rips. Volatility acceleration environment.
+        **🔴 Negative GEX Zone:**
+        * Market is unpinned. Volatility is amplified. Expect fast, cascading moves.
         """)
 
-# --- 4. DATA ENGINE WITH TIMING SEGREGATION (FIX 2 & FIX 5) ---
+# --- 4. DATA ENGINE WITH TIMING SEGREGATION ---
 @st.cache_data(ttl=300)
 def load_and_compute_gex_engine(ticker, r_rate):
-    """
-    FIX 2: Consolidated ATM IV metrics and Max Pain tracking inside a unified data hit.
-    FIX 5: Added same-day 0DTE filter options via cap.
-    """
     try:
         stock = yf.Ticker(ticker)
         current_price = stock.fast_info.get('last_price') or stock.info.get('regularMarketPrice')
@@ -115,7 +103,6 @@ def load_and_compute_gex_engine(ticker, r_rate):
         if not expirations:
             return current_price, None, None, None, None, None
             
-        # Extract Ticker ATM IV & Near-Term Option Chain Context internally
         try:
             near_exp = expirations[0]
             near_chain = stock.option_chain(near_exp)
@@ -127,7 +114,6 @@ def load_and_compute_gex_engine(ticker, r_rate):
             atm_iv_now = 0.20
             max_pain_val = None
             
-        # Extract Macro VIX Volatility trend metrics
         try:
             vix = yf.Ticker("^VIX")
             hist = vix.history(period="5d")
@@ -142,7 +128,6 @@ def load_and_compute_gex_engine(ticker, r_rate):
             exp_date = datetime.strptime(exp_str, "%Y-%m-%d").date()
             dte = (exp_date - today).days
             
-            # FIX 5: Standardized 0DTE threshold baseline tracking to prevent explosive variance distortions
             if dte <= 0:
                 continue
                 
@@ -167,7 +152,6 @@ def load_and_compute_gex_engine(ticker, r_rate):
             'GEX': 'sum', 'Vanna': 'sum', 'Charm': 'sum', 'IV_Raw': 'mean'
         }).reset_index()
         
-        # Calculate unaggregated components for structural chart view options
         raw_call_split = master_df[master_df['GEX'] >= 0].groupby('strike')['GEX'].sum().rename('Call_GEX').reset_index()
         raw_put_split = master_df[master_df['GEX'] < 0].groupby('strike')['GEX'].sum().rename('Put_GEX').reset_index()
         split_matrix = pd.merge(raw_call_split, raw_put_split, on='strike', how='outer').fillna(0.0)
@@ -186,7 +170,6 @@ def load_and_compute_gex_engine(ticker, r_rate):
 with st.spinner("Executing Vectorized Volatility Quant Matrices..."):
     current_price, data_matrix, data_time, atm_iv, vix_delta, max_pain_strike = load_and_compute_gex_engine(ticker_input, risk_free_rate)
 
-# Explicit stop if current price is missing to prevent unexpected downstream crashes
 if current_price is None:
     st.error(f"❌ Failed to extract standard market ticker data info updates for {ticker_input}. Please check connection properties.")
     if 'last_error' in st.session_state: st.code(st.session_state['last_error'])
@@ -195,13 +178,11 @@ if current_price is None:
 if data_matrix is not None:
     st.info(f"📅 **Data Freshness Timestamp:** {data_time} | {ticker_input} ATM Implied Vol: {atm_iv*100:.1f}%")
 
-    # --- FIX 6: FULL SCALE ZERO-GAMMA POSITION COMPUTATION BEFORE ZOOM FILTERING ---
     agg_df_sorted = data_matrix.sort_values('strike').copy()
     agg_df_sorted['cumulative_GEX'] = agg_df_sorted['GEX'].cumsum()
     sign_changes = agg_df_sorted[(agg_df_sorted['cumulative_GEX'] * agg_df_sorted['cumulative_GEX'].shift(1) < 0)]
     zero_gamma_strike = sign_changes['strike'].iloc[0] if not sign_changes.empty else current_price
 
-    # Apply the UI visual zoom boundary constraints
     lower_bound = current_price * (1.0 - zoom_pct)
     upper_bound = current_price * (1.0 + zoom_pct)
     filtered_df = data_matrix[(data_matrix['strike'] >= lower_bound) & (data_matrix['strike'] <= upper_bound)].copy()
@@ -213,11 +194,9 @@ if data_matrix is not None:
     auto_threshold_value = current_price * (max(0.005, min(0.035, atm_iv * 0.05)))
     is_flip_zone = abs(current_price - zero_gamma_strike) <= auto_threshold_value
     
-    # FIX 3: Dynamic conditional checks for structural macro trend tracking limits
     vanna_active = vix_delta < -0.50
     vanna_headwind = vix_delta > 0.50
 
-    # --- SHORTHAND FORMATTING LAYER ---
     def to_shorthand(value):
         abs_val = abs(value)
         sign_str = "-" if value < 0 else ""
@@ -237,14 +216,13 @@ if data_matrix is not None:
         f"• RED (-): High-velocity momentum fuel."
     )
 
-    # --- DISPLAY METRICS MATRIX (FIX 7: ADDED CHARM) ---
+    # --- DISPLAY METRICS MATRIX ---
     col1, col2, col3, col4 = st.columns(4)
     with col1:
         st.metric(label=f"Current {ticker_input} Price", value=f"${current_price:.2f}")
     with col2:
         st.metric(label="Total Gamma Exposure ($ GEX)", value=gex_shorthand, help=gex_tooltip_text)
     with col3:
-        # FIX 7: Integrated operational tracking of systemic time decay dynamics
         st.metric(label="Daily Charm Flow", value=to_shorthand(total_charm), help="Estimated value options market makers must buy/sell today from structural time decay parameters.")
     with col4:
         state_label = "⚡ FLIP ZONE" if is_flip_zone else ("🟢 POSITIVE GEX" if total_gex > 0 else "🔴 NEGATIVE GEX")
@@ -285,10 +263,18 @@ if data_matrix is not None:
 
     st.divider()
 
-    # --- 7. PLOTLY CHART COMPONENT (FIX 6 & FIX 8) ---
+    # --- 7. PLOTLY CHART COMPONENT (WITH ADHD LABELS) ---
     st.subheader("📊 Cumulative Volatility Profile Architecture")
     
-    # FIX 8: Added tracking toggles for clean call/put structure mapping views
+    # ADHD Visual Guide Box
+    with st.container(border=True):
+        st.markdown("""
+        💡 **Quick Chart Guide to Eliminate Cognitive Overload:**
+        * 🟢 **Green Bars above 0:** Market makers are **Buying** to steady the market. Safe Zone.
+        * 🔴 **Red Bars below 0:** Market makers are **Selling** when price drops. Chaos/Fast Drops Zone.
+        * 🟡 **Yellow Line:** The trend line. Where it crosses **0** is the exact tipping point.
+        """)
+
     chart_mode = st.radio("Display Profile Selection", ["Net GEX Profile", "Call / Put Distribution Split"], horizontal=True)
     
     fig = go.Figure()
@@ -312,7 +298,6 @@ if data_matrix is not None:
         ))
         fig.update_layout(barmode='group')
     
-    # FIX 6: Slicing the full dataset cumulative array window cleanly for visualization layout
     df_sorted_display = data_matrix[(data_matrix['strike'] >= lower_bound) & (data_matrix['strike'] <= upper_bound)].sort_values('strike').copy()
     df_sorted_display['cum_GEX_display'] = df_sorted_display['GEX'].cumsum()
     
@@ -321,15 +306,45 @@ if data_matrix is not None:
         line=dict(color='#f1c40f', width=3), name='Cumulative GEX Profile Line'
     ))
     
-    fig.add_vline(x=current_price, line_dash="dash", line_color="#3498db", line_width=2, annotation_text=" SPOT ")
+    # Lines & Static Position Overlays
+    fig.add_vline(x=current_price, line_dash="dash", line_color="#3498db", line_width=2, annotation_text=" SPOT (Price Now) ")
     fig.add_vline(x=zero_gamma_strike, line_dash="dot", line_color="#9b59b6", line_width=2, annotation_text=" TRUE FLIP NODE ")
     if max_pain_strike:
         fig.add_vline(x=max_pain_strike, line_dash="dot", line_color="#e67e22", line_width=2, annotation_text=" MAX PAIN ")
         
+    # --- ADHD FIELD ANNOTATIONS (HIGH CONTRAST SHADED TEXT BOXES) ---
+    max_y_val = max(abs(filtered_df['GEX'].max()), abs(filtered_df['GEX'].min())) if not filtered_df.empty else 1e6
+    
+    fig.add_annotation(
+        x=upper_bound - (zoom_pct * current_price * 0.25),
+        y=max_y_val * 0.75,
+        text="🟢 SAFE ZONE<br>Dealers stabilize asset prices",
+        showarrow=False,
+        font=dict(size=12, color="#2ecc71"),
+        bordercolor="#2ecc71",
+        borderwidth=1,
+        borderpad=4,
+        bgcolor="#1e1e1e",
+        opacity=0.85
+    )
+    
+    fig.add_annotation(
+        x=lower_bound + (zoom_pct * current_price * 0.25),
+        y=-max_y_val * 0.75,
+        text="🔴 ACCELERATION ZONE<br>Fast spikes & sharp cascades",
+        showarrow=False,
+        font=dict(size=12, color="#e74c3c"),
+        bordercolor="#e74c3c",
+        borderwidth=1,
+        borderpad=4,
+        bgcolor="#1e1e1e",
+        opacity=0.85
+    )
+        
     fig.update_layout(
-        template="plotly_dark", # Applied true dark layout configuration mapping
+        template="plotly_dark",
         xaxis_title="Strike Price ($)", yaxis_title="Structural Exposure Capacity ($)",
-        margin=dict(l=20, r=20, t=20, b=20), height=520,
+        margin=dict(l=20, r=20, t=20, b=20), height=550,
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
     )
     st.plotly_chart(fig, use_container_width=True)
