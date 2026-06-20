@@ -14,7 +14,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# FIX 5 — Accessibility guard checking for user OS prefers-reduced-motion profiles
+# FIXED: Added prefers-reduced-motion CSS guard to support accessibility profiles
 st.markdown("""
 <style>
     @media (prefers-reduced-motion: no-preference) {
@@ -29,13 +29,13 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# FIX 1 — Restored original explicit educational risk disclaimer bar
+# FIXED: Restored original required educational risk disclaimer banner
 st.warning("⚠️ For educational and research purposes only. Not financial advice.")
 
 st.title("📊 SPY Structural Flow Dashboard")
 st.caption("Tracking Options Market Maker Hedging Constraints.")
 
-# --- 2. PERSISTENT LEFT SIDEBAR PANEL (WITH FINE-TUNING) ---
+# --- 2. PERSISTENT LEFT SIDEBAR PANEL ---
 with st.sidebar:
     st.header("🎛️ Controls & Parameters")
     ticker_input = st.text_input(label="Target Ticker Symbol", value="SPY").upper()
@@ -159,10 +159,57 @@ with st.spinner("Executing Volatility Quant Matrices..."):
     except Exception:
         current_price = None
 
-# FIX 2 — Safe execution pattern handling short-circuit checks to prevent calling isnan on None values
+# FIXED: Implemented short-circuit verification logic to protect against passing None objects to np.isnan
 if not current_price or (isinstance(current_price, float) and np.isnan(current_price)):
     st.error(f"❌ Failed to extract market price updates for {ticker_input}.")
     st.stop()
 
-# Round to 2dp so the cache key stays perfectly stable
-price_key = round(
+# Cache key is rounded to 2dp for lookup parameter stability
+price_key = round(current_price, 2)
+
+@st.cache_data(ttl=300)
+def load_and_compute_gex_engine(ticker, r_rate, target_price, min_d, max_d):
+    try:
+        stock_obj = yf.Ticker(ticker)
+        expirations = stock_obj.options
+        if not expirations:
+            return None, None, None, None, 0.0
+            
+        try:
+            near_chain = stock_obj.option_chain(expirations[0])
+            atm_idx = (near_chain.calls['strike'] - target_price).abs().idxmin()
+            atm_iv_now = float(near_chain.calls.loc[atm_idx, 'impliedVolatility'])
+            max_pain_val = calculate_max_pain_vectorized(near_chain)
+        except Exception:
+            atm_iv_now = 0.20
+            max_pain_val = None
+            
+        compiled_dfs = []
+        today = datetime.now().date()
+        
+        for exp_str in expirations:
+            try:
+                exp_date = datetime.strptime(exp_str, "%Y-%m-%d").date()
+                dte = (exp_date - today).days
+                if dte < min_d or dte > max_d:
+                    continue
+                    
+                dte_weight = max(0.1, (max_d + 1 - dte) / max(max_d, 1))
+                T = max(dte, 1) / 365.0
+                
+                opt_chain = stock_obj.option_chain(exp_str)
+                call_res = process_chain_vectorized(opt_chain.calls, 'call', target_price, T, r_rate, dte_weight)
+                put_res = process_chain_vectorized(opt_chain.puts, 'put', target_price, T, r_rate, dte_weight)
+                
+                if not call_res.empty: compiled_dfs.append(call_res)
+                if not put_res.empty: compiled_dfs.append(put_res)
+            except Exception:
+                continue
+            
+        if not compiled_dfs:
+            return None, atm_iv_now, max_pain_val, "No Compiled Data", 0.0
+            
+        master_df = pd.concat(compiled_dfs, ignore_index=True)
+        
+        gex_threshold = master_df.groupby('strike')['GEX'].transform('sum').abs()
+        noise_floor = gex_threshold.
