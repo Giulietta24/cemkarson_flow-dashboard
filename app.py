@@ -226,33 +226,35 @@ if data_matrix is not None:
     st.caption(f"🎯 **True Cumulative Zero-Gamma Strike:** ${zero_gamma_strike:.2f} | **Gravitational Max Pain Anchor:** ${max_pain_strike if max_pain_strike else 'N/A'}")
     st.divider()
 
-    # --- FIXED: UNCONDITIONAL CRITICAL PLAYBOOK ALERTS ---
+    # --- STRUCTURAL PLAYBOOK GUIDELINES ---
     st.subheader("🎯 Structural Playbook Guidelines")
     
-    # 1. Tipping Point Rule
     if is_approaching_zero:
-        st.error(f"🚨 **CRITICAL RED ALERT: DANGER ZONE UNLOCKED!** Price is within {pct_from_flip*100:.1f}% of the Tipping Point (${zero_gamma_strike:.2f}). Market makers are dynamically scrambling formulas. Intraday whipsaws are guaranteed—expect extreme chaos!")
+        st.error(f"🚨 **CRITICAL RED ALERT: DANGER ZONE UNLOCKED!** Price is within {pct_from_flip*100:.1f}% of the Tipping Point (${zero_gamma_strike:.2f}). Intraday whipsaws are guaranteed—expect volatile conditions!")
     else:
         st.info(f"ℹ️ **Tipping Point Proximity:** Price is currently {pct_from_flip*100:.1f}% away from the critical Zero-Gamma Strike (${zero_gamma_strike:.2f}).")
 
-    # 2. Pos/Neg Structural Playbooks
     col_pb1, col_pb2 = st.columns(2)
     with col_pb1:
-        st.success(f"🟢 **PLAYBOOK: ABOVE THE TIPPING POINT (> ${zero_gamma_strike:.2f})**\n\n* **The Strategy:** Premium Selling / Mean-Reversion.\n* **Why:** Gravity is active. Market makers are mechanically forced to *buy drops* and *sell rallies*, creating a localized safety buffer. Sell structures safely outside the True Flip boundary node.")
+        st.success(f"🟢 **PLAYBOOK: ABOVE THE TIPPING POINT (> ${zero_gamma_strike:.2f})**\n\n* **The Strategy:** Premium Selling / Mean-Reversion.\n* **Why:** Gravity is active. Market makers buy drops and sell rallies. Sell outside the True Flip boundary node.")
     with col_pb2:
-        st.error(f"🔴 **PLAYBOOK: BELOW THE TIPPING POINT (< ${zero_gamma_strike:.2f})**\n\n* **The Strategy:** Long Puts / Pure Momentum / Long Volatility.\n* **Why:** Gravity turns off completely. Rocket boosters engage in reverse. Market makers are forced to *sell drops*, accelerating price corrections into sudden, unpinned flash declines.")
+        st.error(f"🔴 **PLAYBOOK: BELOW THE TIPPING POINT (< ${zero_gamma_strike:.2f})**\n\n* **The Strategy:** Long Puts / Pure Momentum / Long Volatility.\n* **Why:** Gravity turns off. Market makers are forced to sell drops, accelerating price corrections.")
 
     st.divider()
 
-    # --- 7. PLOTLY CHART COMPONENT (CLEAN LEGEND PLACEMENT) ---
+    # --- 7. PLOTLY CHART COMPONENT (NATIVE LEGEND REMOVED FOR CLEANLINESS) ---
     st.subheader("📊 Cumulative Volatility Profile Architecture")
     
+    # NEW: HIGH-CONTRAST STREAMLIT MARKDOWN LEGEND KEY
+    # Completely independent from Plotly, guarantees high-contrast text visibility
     with st.container(border=True):
-        st.markdown("""
-        💡 **Quick Chart Guide:**
-        * **Blue Dashed Line:** Current Stock Price right now.
-        * **Purple Dotted Line:** The Tipping Point (0 Node). **Dangerous volatility expands if price falls under this.**
-        * **Yellow Solid Line:** Overall market trend. It crosses zero right at the Tipping Point line.
+        st.markdown(f"""
+        ### 🔑 Chart Legend Key
+        * 🔵 **BLUE DASHED LINE** = **Price Now:** Current stock spot execution price (${current_price:.2f}).
+        * 🟣 **PURPLE DOTTED LINE** = **Tipping Point:** The True Gamma Flip Strike (${zero_gamma_strike:.2f}). **Danger zone beneath this.**
+        * 🟡 **YELLOW LINE** = **Cumulative GEX Profile:** Global network momentum path tracker.
+        * 🟩 **GREEN BARS** = Positive market maker stabilization buffers.
+        * 🟥 **RED BARS** = Negative market maker directional acceleration pressure.
         """)
 
     chart_mode = st.radio("Display Profile Selection", ["Net GEX Profile", "Call / Put Distribution Split"], horizontal=True)
@@ -263,17 +265,17 @@ if data_matrix is not None:
         fig.add_trace(go.Bar(
             x=filtered_df['strike'], y=filtered_df['GEX'],
             marker_color=np.where(filtered_df['GEX'] >= 0, '#2ecc71', '#e74c3c'),
-            name='Strike Dollar GEX', hovertemplate="Strike: %{x}<br>Net GEX: $ %{y:,.0f}<extra></extra>"
+            showlegend=False, hovertemplate="Strike: %{x}<br>Net GEX: $ %{y:,.0f}<extra></extra>"
         ))
     else:
         fig.add_trace(go.Bar(
             x=filtered_df['strike'], y=filtered_df['Call_GEX'],
-            marker_color='#2ecc71', name='Call Gamma GEX',
+            marker_color='#2ecc71', showlegend=False,
             hovertemplate="Strike: %{x}<br>Call GEX: $ %{y:,.0f}<extra></extra>"
         ))
         fig.add_trace(go.Bar(
             x=filtered_df['strike'], y=filtered_df['Put_GEX'],
-            marker_color='#e74c3c', name='Put Gamma GEX',
+            marker_color='#e74c3c', showlegend=False,
             hovertemplate="Strike: %{x}<br>Put GEX: $ %{y:,.0f}<extra></extra>"
         ))
         fig.update_layout(barmode='group')
@@ -283,7 +285,7 @@ if data_matrix is not None:
     
     fig.add_trace(go.Scatter(
         x=df_sorted_display['strike'], y=df_sorted_display['cum_GEX_display'],
-        line=dict(color='#f1c40f', width=3), name='Cumulative GEX (Yellow Line)'
+        line=dict(color='#f1c40f', width=3), showlegend=False
     ))
     
     fig.add_vline(x=current_price, line_dash="dash", line_color="#3498db", line_width=2.5)
@@ -291,24 +293,11 @@ if data_matrix is not None:
     if max_pain_strike:
         fig.add_vline(x=max_pain_strike, line_dash="dot", line_color="#e67e22", line_width=2)
         
-    # FIX: Explicit color keys added to populate the top horizontal legend outside the chart boundaries
-    fig.add_trace(go.Scatter(x=[None], y=[None], mode='lines', line=dict(color='#3498db', dash='dash'), name='🔵 BLUE LINE = Price Now'))
-    fig.add_trace(go.Scatter(x=[None], y=[None], mode='lines', line=dict(color='#9b59b6', dash='dot'), name='🟣 PURPLE LINE = Tipping Point (0)'))
-    if max_pain_strike:
-        fig.add_trace(go.Scatter(x=[None], y=[None], mode='lines', line=dict(color='#e67e22', dash='dot'), name='🟠 ORANGE LINE = Max Pain Level'))
-        
     fig.update_layout(
         template="plotly_dark",
         xaxis_title="Strike Price ($)", yaxis_title="Exposure Capacity ($)",
-        margin=dict(l=40, r=40, t=80, b=40), height=600,
-        # FIX: Placed legend completely above chart, layout tracking text color set to pure bright white
-        legend=dict(
-            orientation="h", 
-            yanchor="bottom", y=1.02, 
-            xanchor="center", x=0.5, 
-            font=dict(size=12, color="#FFFFFF"),
-            bgcolor="rgba(0,0,0,0)"
-        )
+        margin=dict(l=40, r=40, t=20, b=40), height=600,
+        showlegend=False # Turns off the broken Plotly legend completely to eliminate grey boxes
     )
     st.plotly_chart(fig, use_container_width=True)
 else:
