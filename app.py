@@ -334,6 +334,7 @@ elif vix_delta_val > 0.50:
 
 
 # --- 13. CHARM DAILY FLOW WITH EXPLANATION ---
+
 charm_display   = format_scaled_exposure(total_charm)
 charm_direction = "buying" if total_charm > 0 else "selling"
 
@@ -347,8 +348,6 @@ charm_html = (
 )
 
 st.markdown(f"<small>{charm_html}</small>", unsafe_allow_html=True)
-
-st.divider()
 
 # --- 14. STRUCTURAL PLAYBOOK ---
 st.subheader("🎯 Structural Playbook")
