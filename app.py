@@ -64,8 +64,7 @@ def process_chain_vectorized(df, option_type, S, T, r_rate, dte_weight):
         gamma = np.nan_to_num(pdf_d1 / (S * iv * np.sqrt(T)), nan=0.0, posinf=0.0)
         vanna = np.nan_to_num(-pdf_d1 * (d2 / iv), nan=0.0, posinf=0.0)
         
-        # NOTE: Charm sign convention tracking delta decay per calendar day.
-        # Negative value implies absolute delta magnitude decreases over time.
+        # Charm sign convention: delta decay per calendar day
         charm = np.nan_to_num(pdf_d1 * (r_rate / (iv * np.sqrt(T)) - (d1 * d2) / (2 * T)) * (-1.0 / 365.0), nan=0.0, posinf=0.0)
         
         sign = 1.0 if option_type == 'call' else -1.0
@@ -157,10 +156,9 @@ def load_and_compute_gex_engine(ticker, r_rate, current_price):
             
         master_df = pd.concat(compiled_dfs, ignore_index=True)
         
-        # --- IMPROVEMENT: MINIMUM OPEN INTEREST FILTER TO DROPDOWN OTM NOISE ---
+        # Minimum Liquidity Filter to drop noise out of calculation tracking
         master_df = master_df[master_df.groupby('strike')['GEX'].transform('sum').abs() > 10000]
         
-        # --- AGGREGATION & SEPARATE CALL/PUT RESTORATION ENGINE ---
         agg_df = master_df.groupby('strike').agg({
             'GEX': 'sum', 'Vanna': 'sum', 'Charm': 'sum', 'IV_Raw': 'mean'
         }).reset_index()
@@ -190,20 +188,27 @@ if data_matrix is not None:
     upper_bound = current_price * (1.0 + zoom_pct)
     filtered_df = data_matrix[(data_matrix['strike'] >= lower_bound) & (data_matrix['strike'] <= upper_bound)].copy()
 
-    total_gex = filtered_df['GEX'].sum()
+    # --- EXPOSURE CAPACITY CALCULATIONS ---
+    total_gex_dollar = data_matrix['GEX'].sum()
+    total_gex_shares = total_gex_dollar / current_price
+    
     pct_from_flip = (abs(current_price - zero_gamma_strike) / current_price)
     is_approaching_zero = pct_from_flip <= 0.01
 
-    # --- SCOREBOARD METRICS MATRIX ---
-    col1, col2, col3 = st.columns(3)
+    # --- SCOREBOARD METRICS ROW (WITH COHERENT VALUE HEADERS) ---
+    col1, col2, col3, col4, col5 = st.columns(5)
     with col1:
-        st.metric(label=f"Current {ticker_input} Price", value=f"${current_price:.2f}")
+        st.metric(label=f"Current Price ({ticker_input})", value=f"${current_price:.2f}")
     with col2:
-        st.metric(label="Tipping Point (Zero GEX)", value=f"${zero_gamma_strike:.2f}")
+        st.metric(label="Zero GEX Tipping Node", value=f"${zero_gamma_strike:.2f}")
     with col3:
+        st.metric(label="Total Net GEX Amount", value=f"${total_gex_dollar:,.0f}")
+    with col4:
+        st.metric(label="Total GEX (Shares)", value=f"{total_gex_shares:,.0f}")
+    with col5:
         if is_approaching_zero:
             st.warning("⚡ TRANSITION ZONE")
-        elif total_gex > 0:
+        elif total_gex_dollar > 0:
             st.success("🟢 CALM MARKET REGIME")
         else:
             st.error("🔴 ACCELERATION REGIME")
@@ -213,13 +218,11 @@ if data_matrix is not None:
     # --- STRUCTURAL PLAYBOOK GUIDELINES ---
     st.subheader("🎯 Structural Playbook Guidelines")
     
-    # IMPROVEMENT: Use balanced st.warning instead of aggressive error messages for transition boundaries
     if is_approaching_zero:
         st.warning(f"🚨 **MODEL SIGNAL: TRANSITION ZONE RANGE INTRUSION.** Price is within {pct_from_flip*100:.1f}% of the calculated Zero-Gamma node (${zero_gamma_strike:.2f}). Historic baseline metrics reflect increased asset variance.")
     else:
         st.info(f"ℹ️ **Tipping Point Proximity:** Price is currently {pct_from_flip*100:.1f}% away from the calculated Zero-Gamma Strike (${zero_gamma_strike:.2f}).")
 
-    # IMPROVEMENT: High noise alert if filtered display size is too small
     if len(filtered_df) < 5:
         st.warning("⚠️ **DATA QUALITY NOTICE:** Low strike density detected inside current zoom window. Results may appear noisy or truncated.")
 
@@ -247,6 +250,7 @@ if data_matrix is not None:
         ### 🔑 Chart Legend Key
         * 🔵 **BLUE DASHED LINE** = **Price Now:** Current stock spot execution price (${current_price:.2f}).
         * 🟣 **PURPLE DOTTED LINE** = **Estimated Zero-Gamma Node:** Calculated across the global series (${zero_gamma_strike:.2f}).
+        * 🟠 **ORANGE DOTTED LINE** = **Max Pain Node:** Striking matrix concentration floor (${max_pain_strike if max_pain_strike else 0:.2f}).
         * 🟡 **YELLOW LINE** = **Cumulative GEX Summation Profile:** Tracking the running aggregate sum across available strikes.
         """)
 
@@ -281,12 +285,16 @@ if data_matrix is not None:
         line=dict(color='#f1c40f', width=3), showlegend=False
     ))
     
+    # Render all alignment anchor markers cleanly
     fig.add_vline(x=current_price, line_dash="dash", line_color="#3498db", line_width=2.5)
     fig.add_vline(x=zero_gamma_strike, line_dash="dot", line_color="#9b59b6", line_width=2.5)
+    
+    if max_pain_strike is not None:
+        fig.add_vline(x=max_pain_strike, line_dash="dot", line_color="#e67e22", line_width=2.5)
         
     fig.update_layout(
         template="plotly_dark",
-        xaxis_title="Strike Price ($)", yaxis_title="Running Exposure Capacity Sum ($)",
+        xaxis_title="Strike Price ($)", yaxis_title="Exposure Capacity Sum ($)",
         margin=dict(l=40, r=40, t=20, b=40), height=600,
         showlegend=False
     )
