@@ -140,4 +140,67 @@ def load_and_compute_gex_engine(ticker, r_rate, current_price):
         if not compiled_dfs:
             return None, atm_iv_now, max_pain_val, "No Compiled Data"
             
-        master
+        master_df = pd.concat(compiled_dfs, ignore_index=True)
+        
+        # --- IMPROVEMENT: FILTER ILLIQUID STRIKES BEFORE GLOBAL ZERO-GAMMA CALCULATION ---
+        # Prevents far OTM noise from skewing the final zero-gamma node positioning.
+        master_df = master_df[master_df.groupby('strike')['GEX'].transform('sum').abs() > 10000]
+        
+        # --- ARCHITECTURE DESIGN CHOICE NOTE ---
+        # Aggregation over strikes drops 'Option_Type'. Split matrices are explicitly parsed 
+        # using the pristine source frames first, then joined back to maintain clear categorical data.
+        agg_df = master_df.groupby('strike').agg({
+            'GEX': 'sum', 'Vanna': 'sum', 'Charm': 'sum', 'IV_Raw': 'mean'
+        }).reset_index()
+        
+        raw_call_split = master_df[master_df['Option_Type'] == 'call'].groupby('strike')['GEX'].sum().rename('Call_GEX').reset_index()
+        raw_put_split = master_df[master_df['Option_Type'] == 'put'].groupby('strike')['GEX'].sum().rename('Put_GEX').reset_index()
+        split_matrix = pd.merge(raw_call_split, raw_put_split, on='strike', how='outer').fillna(0.0)
+        agg_df = pd.merge(agg_df, split_matrix, on='strike', how='left').fillna(0.0)
+        
+        est_tz = pytz.timezone('US/Eastern')
+        fetch_timestamp = datetime.now(est_tz).strftime("%I:%M %p EST")
+        
+        return agg_df, atm_iv_now, max_pain_val, fetch_timestamp
+        
+    except Exception:
+        return None, None, None, None
+
+data_matrix, atm_iv, max_pain_strike, data_time = load_and_compute_gex_engine(ticker_input, risk_free_rate, current_price)
+
+if data_matrix is not None:
+    agg_df_sorted = data_matrix.sort_values('strike').copy()
+    agg_df_sorted['cumulative_GEX'] = agg_df_sorted['GEX'].cumsum()
+    sign_changes = agg_df_sorted[(agg_df_sorted['cumulative_GEX'] * agg_df_sorted['cumulative_GEX'].shift(1) < 0)]
+    zero_gamma_strike = sign_changes['strike'].iloc[0] if not sign_changes.empty else current_price
+
+    lower_bound = current_price * (1.0 - zoom_pct)
+    upper_bound = current_price * (1.0 + zoom_pct)
+    filtered_df = data_matrix[(data_matrix['strike'] >= lower_bound) & (data_matrix['strike'] <= upper_bound)].copy()
+
+    total_gex = filtered_df['GEX'].sum()
+    pct_from_flip = (abs(current_price - zero_gamma_strike) / current_price)
+    is_approaching_zero = pct_from_flip <= 0.01
+
+    # --- DISPLAY METRICS MATRIX ---
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric(label=f"Current {ticker_input} Price", value=f"${current_price:.2f}")
+    with col2:
+        st.metric(label="Tipping Point (Zero GEX)", value=f"${zero_gamma_strike:.2f}")
+    with col3:
+        if is_approaching_zero:
+            st.warning("⚡ TRANSITION BOUNDARY")
+        elif total_gex > 0:
+            st.success("🟢 POSITIVE GEX REGIME")
+        else:
+            st.error("🔴 NEGATIVE GEX REGIME")
+
+    st.divider()
+
+    # --- STRUCTURAL PLAYBOOK GUIDELINES ---
+    st.subheader("🎯 Structural Playbook Guidelines")
+    
+    # --- IMPROVEMENT: BALANCED INFRASTRUCTURE CONTRAST (st.warning instead of st.error) ---
+    if is_approaching_zero:
+        st.warning(f"🚨 **MODEL SIGNAL: TRANSITION ZONE RANGE INTR
