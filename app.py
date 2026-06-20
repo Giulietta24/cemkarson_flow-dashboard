@@ -339,15 +339,14 @@ elif vix_delta_val > 0.50:
 charm_display   = format_scaled_exposure(total_charm)
 charm_direction = "buying" if total_charm > 0 else "selling"
 
-st.caption(
-    f"⏱️ Daily Charm Flow: {charm_display} — "
+st.markdown(
+    f"⏱️ **Daily Charm Flow: {charm_display}** — "
     f"Charm measures how much dealer delta decays from time passing alone "
     f"(independent of price or vol moves). "
-    f"Today's time decay forces dealers to mechanically {charm_direction} an estimated "
-    f"{charm_display} worth of underlying stock purely to stay delta-neutral. "
+    f"Today's time decay forces dealers to mechanically **{charm_direction}** an estimated "
+    f"**{charm_display}** worth of underlying stock purely to stay delta-neutral. "
     f"This flow happens every trading day on autopilot regardless of market direction."
 )
-
 # --- 14. STRUCTURAL PLAYBOOK ---
 st.subheader("🎯 Structural Playbook")
 
