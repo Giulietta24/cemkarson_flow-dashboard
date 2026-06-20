@@ -80,8 +80,7 @@ with st.sidebar:
     risk_free_rate = st.number_input("Risk-Free Rate (r)", value=0.05, step=0.01)
 
     st.markdown("---")
-    st.subheader("🧠 Playbook Cheat Sheet")
-    # Added your complete requested explanations to the side panel as a permanent reference
+    st.subheader("🧠 Playbook Reference Manual")
     with st.container(border=True):
         st.markdown("""
         **🟢 Above 0 (Positive Gamma Zone):**
@@ -94,7 +93,7 @@ with st.sidebar:
         When the **Blue Line (Price)** gets very close to the **Purple Line (Tipping Point)**, the market becomes highly unpredictable. Expect sudden, violent intraday whipsaws.
         """)
 
-# --- 4. DATA ENGINE (FIXED CACHING BUG) ---
+# --- 4. DATA ENGINE (STABLE CACHING) ---
 with st.spinner("Executing Vectorized Volatility Quant Matrices..."):
     try:
         stock = yf.Ticker(ticker_input)
@@ -106,14 +105,13 @@ if current_price is None:
     st.error(f"❌ Failed to extract market price updates for {ticker_input}.")
     st.stop()
 
-# FIX: Removed raw yfinance object from the cache return variables to avoid UnserializableReturnValueError
 @st.cache_data(ttl=300)
 def load_and_compute_gex_engine(ticker, r_rate, current_price):
     try:
         stock = yf.Ticker(ticker)
         expirations = stock.options
         if not expirations:
-            return None, None, None, None, None
+            return None, None, None, None
             
         try:
             near_exp = expirations[0]
@@ -153,7 +151,7 @@ def load_and_compute_gex_engine(ticker, r_rate, current_price):
             if not put_res.empty: compiled_dfs.append(put_res)
             
         if not compiled_dfs:
-            return None, atm_iv_now, vix_delta_val, max_pain_val, "No Data"
+            return None, atm_iv_now, vix_delta_val, max_pain_val
             
         master_df = pd.concat(compiled_dfs, ignore_index=True)
         agg_df = master_df.groupby('strike').agg({
@@ -171,7 +169,7 @@ def load_and_compute_gex_engine(ticker, r_rate, current_price):
         return agg_df, fetch_timestamp, atm_iv_now, vix_delta_val, max_pain_val
         
     except Exception:
-        return None, None, None, None, None
+        return None, None, None, None
 
 data_matrix, data_time, atm_iv, vix_delta, max_pain_strike = load_and_compute_gex_engine(ticker_input, risk_free_rate, current_price)
 
@@ -204,9 +202,9 @@ if data_matrix is not None:
     def to_shorthand_shares(value):
         abs_val = abs(value)
         sign_str = "-" if value < 0 else ""
-        if abs_val >= 1_000_000: return f"{sign_str}{abs_val / 1_000_000:.1f}M shares"
-        elif abs_val >= 1_000: return f"{sign_str}{abs_val / 1_000:.1f}K shares"
-        return f"{sign_str}{abs_val:.0f} shares"
+        if abs_val >= 1_000_000: return f"{sign_str}{abs_val / 1_000_000:.1f}M shrs"
+        elif abs_val >= 1_000: return f"{sign_str}{abs_val / 1_000:.1f}K shrs"
+        return f"{sign_str}{abs_val:.0f} shrs"
 
     # --- DISPLAY METRICS MATRIX ---
     col1, col2, col3, col4 = st.columns(4)
@@ -228,14 +226,34 @@ if data_matrix is not None:
     st.caption(f"🎯 **True Cumulative Zero-Gamma Strike:** ${zero_gamma_strike:.2f} | **Gravitational Max Pain Anchor:** ${max_pain_strike if max_pain_strike else 'N/A'}")
     st.divider()
 
-    # Dynamic Danger-Close Notification
+    # --- FIXED: UNCONDITIONAL CRITICAL PLAYBOOK ALERTS ---
+    st.subheader("🎯 Structural Playbook Guidelines")
+    
+    # 1. Tipping Point Rule
     if is_approaching_zero:
-        st.markdown("### ⚡️ SYSTEM STATUS: Approaching the Tipping Point!")
-        st.warning(f"**Heads Up:** The current price is only {pct_from_flip*100:.1f}% away from the Zero-Gamma line (${zero_gamma_strike:.2f}). Check the sidebar cheat sheet to see why volatility might get erratic here!")
-        st.divider()
+        st.error(f"🚨 **CRITICAL RED ALERT: DANGER ZONE UNLOCKED!** Price is within {pct_from_flip*100:.1f}% of the Tipping Point (${zero_gamma_strike:.2f}). Market makers are dynamically scrambling formulas. Intraday whipsaws are guaranteed—expect extreme chaos!")
+    else:
+        st.info(f"ℹ️ **Tipping Point Proximity:** Price is currently {pct_from_flip*100:.1f}% away from the critical Zero-Gamma Strike (${zero_gamma_strike:.2f}).")
+
+    # 2. Pos/Neg Structural Playbooks
+    col_pb1, col_pb2 = st.columns(2)
+    with col_pb1:
+        st.success(f"🟢 **PLAYBOOK: ABOVE THE TIPPING POINT (> ${zero_gamma_strike:.2f})**\n\n* **The Strategy:** Premium Selling / Mean-Reversion.\n* **Why:** Gravity is active. Market makers are mechanically forced to *buy drops* and *sell rallies*, creating a localized safety buffer. Sell structures safely outside the True Flip boundary node.")
+    with col_pb2:
+        st.error(f"🔴 **PLAYBOOK: BELOW THE TIPPING POINT (< ${zero_gamma_strike:.2f})**\n\n* **The Strategy:** Long Puts / Pure Momentum / Long Volatility.\n* **Why:** Gravity turns off completely. Rocket boosters engage in reverse. Market makers are forced to *sell drops*, accelerating price corrections into sudden, unpinned flash declines.")
+
+    st.divider()
 
     # --- 7. PLOTLY CHART COMPONENT (CLEAN LEGEND PLACEMENT) ---
     st.subheader("📊 Cumulative Volatility Profile Architecture")
+    
+    with st.container(border=True):
+        st.markdown("""
+        💡 **Quick Chart Guide:**
+        * **Blue Dashed Line:** Current Stock Price right now.
+        * **Purple Dotted Line:** The Tipping Point (0 Node). **Dangerous volatility expands if price falls under this.**
+        * **Yellow Solid Line:** Overall market trend. It crosses zero right at the Tipping Point line.
+        """)
 
     chart_mode = st.radio("Display Profile Selection", ["Net GEX Profile", "Call / Put Distribution Split"], horizontal=True)
     
@@ -273,7 +291,7 @@ if data_matrix is not None:
     if max_pain_strike:
         fig.add_vline(x=max_pain_strike, line_dash="dot", line_color="#e67e22", line_width=2)
         
-    # FIX: Moved legend items explicitly into a clean vertical sidebar layout inside the chart container to resolve the overlapping grey boxes
+    # FIX: Explicit color keys added to populate the top horizontal legend outside the chart boundaries
     fig.add_trace(go.Scatter(x=[None], y=[None], mode='lines', line=dict(color='#3498db', dash='dash'), name='🔵 BLUE LINE = Price Now'))
     fig.add_trace(go.Scatter(x=[None], y=[None], mode='lines', line=dict(color='#9b59b6', dash='dot'), name='🟣 PURPLE LINE = Tipping Point (0)'))
     if max_pain_strike:
@@ -282,14 +300,14 @@ if data_matrix is not None:
     fig.update_layout(
         template="plotly_dark",
         xaxis_title="Strike Price ($)", yaxis_title="Exposure Capacity ($)",
-        margin=dict(l=25, r=25, t=25, b=25), height=550,
+        margin=dict(l=40, r=40, t=80, b=40), height=600,
+        # FIX: Placed legend completely above chart, layout tracking text color set to pure bright white
         legend=dict(
-            orientation="v", 
-            yanchor="top", y=0.98, 
-            xanchor="left", x=0.02, 
-            bgcolor="rgba(20,20,20,0.9)",
-            bordercolor="rgba(255,255,255,0.1)",
-            borderwidth=1
+            orientation="h", 
+            yanchor="bottom", y=1.02, 
+            xanchor="center", x=0.5, 
+            font=dict(size=12, color="#FFFFFF"),
+            bgcolor="rgba(0,0,0,0)"
         )
     )
     st.plotly_chart(fig, use_container_width=True)
