@@ -5,127 +5,117 @@ import numpy as np
 import plotly.graph_objects as go
 from scipy.stats import norm
 from datetime import datetime
-import pytz
 
-# --- 1. CONFIGURATION ---
-st.set_page_config(
-    page_title="GEX Flow", 
-    layout="wide", 
-    initial_sidebar_state="expanded"
-)
-
-st.warning("⚠️ Research only. Not financial advice.")
+st.set_page_config(page_title="GEX Dashboard", layout="wide")
 st.title("📊 SPY Structural Flow Dashboard")
-st.caption("Tracking Options Market Maker Constraints.")
+st.caption("Data Engine Core Matrix")
 
-# --- 2. SIDEBAR PANEL ---
+# --- PARAMETERS ---
 with st.sidebar:
-    st.header("🎛️ Controls")
-    tk_in = st.text_input(label="Symbol", value="SPY")
-    ticker_input = tk_in.upper()
-    
-    st.markdown("---")
-    st.subheader("⚙️ Settings")
-    z_val = st.slider("Zoom Window (±%)", 3, 15, 8, 1)
-    zoom_pct = z_val / 100.0
-    risk_free_rate = st.number_input(
-        "Risk-Free Rate (r)", 
-        value=0.05, 
-        step=0.01
-    )
-    
-    st.markdown("### 🗓️ Expirations")
-    min_dte = st.number_input(
-        "Min DTE", 
-        min_value=0, 
-        max_value=10, 
-        value=0
-    )
-    max_dte = st.number_input(
-        "Max DTE", 
-        min_value=11, 
-        max_value=365, 
-        value=90
-    )
+    st.header("🎛️ Settings")
+    symbol = st.text_input("Symbol", "SPY").upper()
+    zoom = st.slider("Zoom Window %", 3, 15, 8) / 100.0
+    r_rate = st.number_input("Risk Free Rate", value=0.05)
+    max_d = st.number_input("Max DTE Filter", value=45)
 
-# --- 3. QUANT ENGINE ---
-def process_chain_vectorized(df, opt_type, S, T, r, d_wt):
-    req_cols = ['strike', 'openInterest', 'impliedVolatility']
-    df = df[req_cols].copy()
-    
-    valid_mask = (df['openInterest'] > 0) & (
-        df['impliedVolatility'] > 0
-    )
-    df = df[valid_mask].copy()
-    if df.empty:
-        return pd.DataFrame()
-        
-    K = df['strike'].values
-    iv = df['impliedVolatility'].values
-    oi = df['openInterest'].values
-    
-    with np.errstate(divide='ignore', invalid='ignore'):
-        t1 = np.log(S / K)
-        t2 = (r + 0.5 * iv**2) * T
-        denom = iv * np.sqrt(T)
-        
-        d1 = (t1 + t2) / denom
-        d2 = d1 - denom
-        pdf_d1 = norm.pdf(d1)
-        
-        g_val = pdf_d1 / (S * iv * np.sqrt(T))
-        v_val = -pdf_d1 * (d2 / iv)
-        
-        c_t = r / (iv * np.sqrt(T)) - (d1 * d2) / (2 * T)
-        c_val = pdf_d1 * c_t * (-1.0 / 365.0)
-        
-        gamma = np.nan_to_num(g_val, 0.0, 0.0)
-        vanna = np.nan_to_num(v_val, 0.0, 0.0)
-        charm = np.nan_to_num(c_val, 0.0, 0.0)
-        
-        sign = 1.0 if opt_type == 'call' else -1.0
-        
-    df['GEX'] = oi * gamma * 100 * (S**2) * d_wt * sign
-    df['Vanna'] = oi * vanna * 100 * d_wt   
-    df['Charm'] = oi * charm * 100 * d_wt   
-    df['IV_Raw'] = iv
-    df['Option_Type'] = opt_type
-    
-    out_cols = [
-        'strike', 'GEX', 'Vanna', 
-        'Charm', 'IV_Raw', 'Option_Type'
-    ]
-    return df[out_cols]
+# --- BASE PRICE FETCH ---
+try:
+    ticker = yf.Ticker(symbol)
+    price = ticker.fast_info.get("last_price")
+    if price is None or np.isnan(price):
+        price = ticker.info.get("regularMarketPrice")
+    if price is None or np.isnan(price):
+        hist = ticker.history(period="1d")
+        if not hist.empty:
+            price = float(hist["Close"].iloc[-1])
+except Exception:
+    price = None
 
-# --- 4. MAX PAIN ---
-def calculate_max_pain_vectorized(opt_chain):
-    try:
-        c_df = opt_chain.calls
-        p_df = opt_chain.puts
-        calls = c_df[['strike', 'openInterest']].dropna()
-        puts = p_df[['strike', 'openInterest']].dropna()
-        
-        stk_set = set(calls['strike']) | set(puts['strike'])
-        all_strikes = sorted(stk_set)
-        strikes = np.array(all_strikes)
-        if len(strikes) == 0:
-            return None
-            
-        c_stk, c_oi = calls['strike'].values, calls['openInterest'].values
-        p_stk, p_oi = puts['strike'].values, puts['openInterest'].values
-        
-        stk_col = strikes[:, np.newaxis]
-        c_loss = np.maximum(c_stk - stk_col, 0) * c_oi * 100
-        p_loss = np.maximum(stk_col - p_stk, 0) * p_oi * 100
-        
-        total_loss = c_loss.sum(axis=1) + p_loss.sum(axis=1)
-        return float(strikes[np.argmin(total_loss)])
-    except Exception:
-        return None
+if not price or np.isnan(price):
+    st.error(f"❌ Could not retrieve market data for {symbol}.")
+    st.stop()
 
-# --- 5. FORMATTING ---
-def format_scaled_exposure(val):
-    abs_val = abs(val)
-    sign = "-" if val < 0 else ""
-    if abs_val >= 1e9:
-        return f
+price_key = float(round(price, 2))
+
+# --- OPTION DATA CALCULATION ---
+try:
+    expirations = ticker.options
+    if not expirations:
+        st.error("No options data available.")
+        st.stop()
+
+    compiled = []
+    today = datetime.now().date()
+
+    for exp in expirations:
+        exp_dt = datetime.strptime(exp, "%Y-%m-%d").date()
+        dte = (exp_dt - today).days
+        if dte < 0 or dte > max_d:
+            continue
+
+        T = max(dte, 1) / 365.0
+        chain = ticker.option_chain(exp)
+
+        for opt_type, df in [("call", chain.calls), ("put", chain.puts)]:
+            c = df[["strike", "openInterest", "impliedVolatility"]].dropna()
+            mask = (c["openInterest"] > 0) & (c["impliedVolatility"] > 0)
+            c = c[mask].copy()
+            if c.empty:
+                continue
+
+            K = c["strike"].values
+            iv = c["impliedVolatility"].values
+            oi = c["openInterest"].values
+
+            d1 = (np.log(price_key / K) + (r_rate + 0.5 * iv**2) * T) / (iv * np.sqrt(T))
+            gamma = norm.pdf(d1) / (price_key * iv * np.sqrt(T))
+            gamma = np.nan_to_num(gamma, nan=0.0)
+
+            sign = 1.0 if opt_type == "call" else -1.0
+            c["GEX"] = oi * gamma * 100 * (price_key**2) * sign
+            compiled.append(c[["strike", "GEX"]])
+
+    if not compiled:
+        st.warning("No data matched your criteria.")
+        st.stop()
+
+    master = pd.concat(compiled, ignore_index=True)
+    agg = master.groupby("strike")["GEX"].sum().reset_index()
+
+    # --- UPGRADED TIPPING POINT DECOUPLING LOGIC ---
+    agg_df_sorted = agg.sort_values("strike").copy()
+    agg_df_sorted["cumulative_GEX"] = agg_df_sorted["GEX"].cumsum()
+
+    cum_g = agg_df_sorted["cumulative_GEX"]
+    sign_changes = agg_df_sorted[(cum_g * cum_g.shift(1) < 0)]
+
+    if not sign_changes.empty:
+        zero_gamma_strike = float(sign_changes["strike"].iloc[0])
+    else:
+        # Scan the entire matrix to locate the strike closest to structural neutral (0)
+        closest_idx = agg_df_sorted["cumulative_GEX"].abs().idxmin()
+        zero_gamma_strike = float(agg_df_sorted.loc[closest_idx, "strike"])
+
+    # --- METRICS & DISPLAY ---
+    total_gex = float(agg["GEX"].sum())
+    
+    col1, col2, col3 = st.columns(3)
+    col1.metric(f"Spot {symbol}", f"${price_key:.2f}")
+    col2.metric("Tipping Point (Zero GEX)", f"${zero_gamma_strike:.2f}")
+    col3.metric("Total Net GEX", f"${total_gex / 1e6:.2f}M")
+
+    # --- PLOTLY PROFILE ---
+    low_b = price_key * (1.0 - zoom)
+    high_b = price_key * (1.0 + zoom)
+    f_df = agg[(agg["strike"] >= low_b) & (agg["strike"] <= high_b)]
+
+    fig = go.Figure()
+    colors = np.where(f_df["GEX"] >= 0, "#2ecc71", "#e74c3c")
+    fig.add_trace(go.Bar(x=f_df["strike"], y=f_df["GEX"], marker_color=colors))
+    fig.add_vline(x=price_key, line_dash="dash", line_color="#3498db")
+    fig.add_vline(x=zero_gamma_strike, line_dash="dot", line_color="#9b59b6")
+    fig.update_layout(template="plotly_dark", xaxis_title="Strike", yaxis_title="Net GEX ($)")
+    st.plotly_chart(fig, use_container_width=True)
+
+except Exception as e:
+    st.error(f"Execution Error: {str(e)}")
