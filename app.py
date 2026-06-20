@@ -269,7 +269,9 @@ zero_gamma_strike  = sign_changes['strike'].iloc[0] if not sign_changes.empty el
 
 lower_bound = current_price * (1.0 - zoom_pct)
 upper_bound = current_price * (1.0 + zoom_pct)
-
+st.caption(f"DEBUG: {len(sign_changes)} sign changes found | "
+           f"Cumulative GEX range: {agg_df_sorted['cumulative_GEX'].min():,.0f} "
+           f"to {agg_df_sorted['cumulative_GEX'].max():,.0f}")
 # Slice display window from pre-computed cumulative frame (keeps flip node and yellow line aligned)
 filtered_df = agg_df_sorted[(agg_df_sorted['strike'] >= lower_bound) & (agg_df_sorted['strike'] <= upper_bound)].copy()
 
