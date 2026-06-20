@@ -59,7 +59,14 @@ with st.sidebar:
         """)
 
 # --- 3. VECTORIZED BLACK-SCHOLES ENGINE ---
-def process_chain_vectorized(df, option_type, S, T, r_rate, dte_weight):
+# FIX: Removed dte_weight parameter — BS gamma already naturally encodes
+# time sensitivity. Near-term options have far higher gamma than longer-dated
+# ones at the same strike, so an extra DTE multiplier double-penalises
+# longer expirations and distorts the structural profile.
+# FIX: Vanna and Charm now use dealer perspective (sign * -1.0).
+# The BS formula computes these from the option BUYER's view.
+# Dealers are SHORT both calls and puts, so their exposure is the mirror image.
+def process_chain_vectorized(df, option_type, S, T, r_rate):
     df = df[['strike', 'openInterest', 'impliedVolatility']].copy()
     df = df[(df['openInterest'] > 0) & (df['impliedVolatility'] > 0)].copy()
     if df.empty:
@@ -74,17 +81,25 @@ def process_chain_vectorized(df, option_type, S, T, r_rate, dte_weight):
         d2 = d1 - iv * np.sqrt(T)
         pdf_d1 = norm.pdf(d1)
 
-        gamma = np.nan_to_num(pdf_d1 / (S * iv * np.sqrt(T)),                                nan=0.0, posinf=0.0)
-        vanna = np.nan_to_num(-pdf_d1 * (d2 / iv),                                           nan=0.0, posinf=0.0)
+        gamma = np.nan_to_num(pdf_d1 / (S * iv * np.sqrt(T)), nan=0.0, posinf=0.0)
+        vanna = np.nan_to_num(-pdf_d1 * (d2 / iv),            nan=0.0, posinf=0.0)
         charm = np.nan_to_num(
             pdf_d1 * (r_rate / (iv * np.sqrt(T)) - (d1 * d2) / (2 * T)) * (-1.0 / 365.0),
             nan=0.0, posinf=0.0
         )
-        sign = 1.0 if option_type == 'call' else -1.0
 
-    df['GEX']         = oi * gamma * 100 * (S**2) * dte_weight * sign
-    df['Vanna']       = oi * vanna * 100 * dte_weight
-    df['Charm']       = oi * charm * 100 * dte_weight
+    # sign: +1 for calls, -1 for puts (dealer short call = long delta hedge;
+    # dealer short put = short delta hedge)
+    sign = 1.0 if option_type == 'call' else -1.0
+
+    # GEX: dealer perspective via sign
+    df['GEX']   = oi * gamma * 100 * (S**2) * sign
+
+    # Vanna & Charm: dealer is SHORT the option so exposure is mirrored
+    # sign handles call/put direction, -1.0 flips buyer -> dealer perspective
+    df['Vanna'] = oi * vanna * 100 * sign * -1.0
+    df['Charm'] = oi * charm * 100 * sign * -1.0
+
     df['IV_Raw']      = iv
     df['Option_Type'] = option_type
 
@@ -125,7 +140,50 @@ def format_scaled_shares(val):
     if abs_val >= 1e6: return f"{sign}{abs_val / 1e6:.2f}M"
     else:              return f"{sign}{abs_val:,.0f}"
 
-# --- 6. PRICE FETCH WITH TRIPLE FALLBACK ---
+# --- 6. TICKER-SPECIFIC IV TREND ENGINE ---
+@st.cache_data(ttl=300)
+def get_ticker_iv_trend(ticker, target_price):
+    """
+    Compares ticker's own front-month vs back-month ATM IV.
+    Positive slope = front vol > back vol = fear/expansion (backwardation).
+    Negative slope = front vol < back vol = calm/compression (contango).
+    """
+    try:
+        stock = yf.Ticker(ticker)
+        expirations = stock.options
+        if not expirations:
+            return 0.20, 0.0
+
+        near_chain = stock.option_chain(expirations[0])
+        atm_idx    = (near_chain.calls['strike'] - target_price).abs().idxmin()
+        atm_iv_now = float(near_chain.calls.loc[atm_idx, 'impliedVolatility'])
+
+        if len(expirations) > 1:
+            next_chain  = stock.option_chain(expirations[1])
+            atm_idx2    = (next_chain.calls['strike'] - target_price).abs().idxmin()
+            atm_iv_next = float(next_chain.calls.loc[atm_idx2, 'impliedVolatility'])
+            iv_slope    = atm_iv_now - atm_iv_next
+        else:
+            iv_slope = 0.0
+
+        return atm_iv_now, iv_slope
+
+    except Exception:
+        return 0.20, 0.0
+
+# --- 7. VIX MARKET CONTEXT ---
+@st.cache_data(ttl=300)
+def get_vix_trend():
+    """VIX 5-day delta — broad market context only, not used for per-ticker signals."""
+    try:
+        vix      = yf.Ticker("^VIX")
+        vix_hist = vix.history(period="5d")
+        return float(vix_hist['Close'].iloc[-1] - vix_hist['Close'].iloc[0]) \
+               if len(vix_hist) >= 3 else 0.0
+    except Exception:
+        return 0.0
+
+# --- 8. PRICE FETCH WITH TRIPLE FALLBACK ---
 with st.spinner("Fetching live market price..."):
     try:
         stock = yf.Ticker(ticker_input)
@@ -145,23 +203,22 @@ if not current_price or (isinstance(current_price, float) and np.isnan(current_p
 
 price_key = round(current_price, 2)
 
-# --- 7. MAIN CACHED GEX ENGINE ---
+# --- 9. MAIN CACHED GEX ENGINE ---
 @st.cache_data(ttl=300)
 def load_and_compute_gex_engine(ticker, r_rate, target_price, min_d, max_d):
     try:
         stock_obj   = yf.Ticker(ticker)
         expirations = stock_obj.options
         if not expirations:
-            return None, None, None, None, 0.0
+            return None, None, None, None
 
         chain_cache = {}
 
-        # ATM IV + Max Pain from nearest expiry
         try:
-            near_chain  = stock_obj.option_chain(expirations[0])
+            near_chain   = stock_obj.option_chain(expirations[0])
             chain_cache[expirations[0]] = near_chain
-            atm_idx     = (near_chain.calls['strike'] - target_price).abs().idxmin()
-            atm_iv_now  = float(near_chain.calls.loc[atm_idx, 'impliedVolatility'])
+            atm_idx      = (near_chain.calls['strike'] - target_price).abs().idxmin()
+            atm_iv_now   = float(near_chain.calls.loc[atm_idx, 'impliedVolatility'])
             max_pain_val = calculate_max_pain_vectorized(near_chain)
         except Exception:
             atm_iv_now   = 0.20
@@ -177,13 +234,14 @@ def load_and_compute_gex_engine(ticker, r_rate, target_price, min_d, max_d):
                 if dte < min_d or dte > max_d:
                     continue
 
-                dte_weight = max(0.1, (max_d + 1 - dte) / max(max_d, 1))
+                # FIX: No dte_weight — BS gamma naturally encodes time decay urgency
                 T = max(dte, 1) / 365.0
 
                 opt_chain = chain_cache.get(exp_str) or stock_obj.option_chain(exp_str)
 
-                call_res = process_chain_vectorized(opt_chain.calls, 'call', target_price, T, r_rate, dte_weight)
-                put_res  = process_chain_vectorized(opt_chain.puts,  'put',  target_price, T, r_rate, dte_weight)
+                # FIX: No dte_weight argument
+                call_res = process_chain_vectorized(opt_chain.calls, 'call', target_price, T, r_rate)
+                put_res  = process_chain_vectorized(opt_chain.puts,  'put',  target_price, T, r_rate)
 
                 if not call_res.empty: compiled_dfs.append(call_res)
                 if not put_res.empty:  compiled_dfs.append(put_res)
@@ -191,11 +249,11 @@ def load_and_compute_gex_engine(ticker, r_rate, target_price, min_d, max_d):
                 continue
 
         if not compiled_dfs:
-            return None, atm_iv_now, max_pain_val, "No Compiled Data", 0.0
+            return None, atm_iv_now, max_pain_val, "No Compiled Data"
 
         master_df = pd.concat(compiled_dfs, ignore_index=True)
 
-        # Relative noise filter — adapts to ticker's own GEX scale
+        # Relative noise filter — adapts to ticker's own GEX magnitude
         gex_per_strike = master_df.groupby('strike')['GEX'].transform('sum').abs()
         noise_floor    = max(gex_per_strike.max() * 0.0001, 1.0)
         master_df      = master_df[gex_per_strike > noise_floor]
@@ -204,7 +262,7 @@ def load_and_compute_gex_engine(ticker, r_rate, target_price, min_d, max_d):
             'GEX': 'sum', 'Vanna': 'sum', 'Charm': 'sum', 'IV_Raw': 'mean'
         }).reset_index()
 
-        # Call / put split for grouped bar mode
+        # Call / put GEX split for grouped bar chart mode
         call_split   = master_df[master_df['Option_Type'] == 'call'].groupby('strike')['GEX'].sum().rename('Call_GEX').reset_index()
         put_split    = master_df[master_df['Option_Type'] == 'put'].groupby('strike')['GEX'].sum().rename('Put_GEX').reset_index()
         split_matrix = pd.merge(call_split, put_split, on='strike', how='outer').fillna(0.0)
@@ -213,47 +271,37 @@ def load_and_compute_gex_engine(ticker, r_rate, target_price, min_d, max_d):
         est_tz          = pytz.timezone('US/Eastern')
         fetch_timestamp = datetime.now(est_tz).strftime("%I:%M %p EST")
 
-        # VIX 5-day trend — requires 3 trading rows minimum
-        try:
-            vix      = yf.Ticker("^VIX")
-            vix_hist = vix.history(period="5d")
-            vix_delta = float(vix_hist['Close'].iloc[-1] - vix_hist['Close'].iloc[0]) \
-                        if len(vix_hist) >= 3 else 0.0
-        except Exception:
-            vix_delta = 0.0
-
-        return agg_df, atm_iv_now, max_pain_val, fetch_timestamp, vix_delta
+        return agg_df, atm_iv_now, max_pain_val, fetch_timestamp
 
     except Exception:
-        return None, None, None, None, 0.0
+        return None, None, None, None
 
-# --- 8. EXECUTE ENGINE ---
+# --- 10. EXECUTE ALL DATA FETCHES ---
 with st.spinner("Executing Vectorized GEX Quant Matrix..."):
-    data_matrix, atm_iv, max_pain_strike, data_time, vix_delta_val = load_and_compute_gex_engine(
+    data_matrix, atm_iv, max_pain_strike, data_time = load_and_compute_gex_engine(
         ticker_input, risk_free_rate, price_key, min_dte, max_dte
     )
+    ticker_iv, iv_slope = get_ticker_iv_trend(ticker_input, price_key)
+    vix_delta_val       = get_vix_trend()
 
 if data_matrix is None:
     st.error("❌ No options data matched your DTE filter range. Try widening Min/Max DTE in the sidebar.")
     st.stop()
 
-# --- 9. DYNAMIC IV-SCALED ZERO-GAMMA FLIP DETECTION ---
-# FIX: Use ATM IV to scale the strike window dynamically per ticker
-# This prevents deep OTM puts from poisoning the cumulative sum
-# e.g. SPY IV=15% → ±30% window | TSLA IV=55% → ±40% window (capped)
+# --- 11. DYNAMIC IV-SCALED ZERO-GAMMA FLIP DETECTION ---
+# Uses ticker's own ATM IV to scale the strike window.
+# Prevents deep OTM puts from poisoning the cumulative sum.
+# e.g. SPY IV=15% → ±30% | TSLA IV=55% → ±40% (capped)
 iv_window = max(0.10, min(0.40, atm_iv * 2.0))
 
 agg_df_sorted = data_matrix.sort_values('strike').copy()
-
-# Apply IV-scaled strike filter BEFORE computing cumulative sum
 agg_df_sorted = agg_df_sorted[
     (agg_df_sorted['strike'] >= current_price * (1 - iv_window)) &
     (agg_df_sorted['strike'] <= current_price * (1 + iv_window))
 ]
-
 agg_df_sorted['cumulative_GEX'] = agg_df_sorted['GEX'].cumsum()
 
-# Find sign change closest to spot price (not just first sign change)
+# Find sign change closest to spot (not just the first one found)
 sign_changes = agg_df_sorted[
     (agg_df_sorted['cumulative_GEX'] * agg_df_sorted['cumulative_GEX'].shift(1) < 0) &
     agg_df_sorted['cumulative_GEX'].shift(1).notna()
@@ -267,7 +315,7 @@ else:
     closest_idx       = agg_df_sorted['cumulative_GEX'].abs().idxmin()
     zero_gamma_strike = agg_df_sorted.loc[closest_idx, 'strike']
 
-# Chart display window uses zoom slider independently of cumsum window
+# Chart display window — independent of cumsum window
 lower_bound = current_price * (1.0 - zoom_pct)
 upper_bound = current_price * (1.0 + zoom_pct)
 filtered_df = agg_df_sorted[
@@ -283,26 +331,33 @@ total_charm      = data_matrix['Charm'].sum()
 pct_from_flip       = abs(current_price - zero_gamma_strike) / current_price
 is_approaching_zero = pct_from_flip <= 0.01
 
-# --- 10. HEADER INFO BAR ---
+# Vanna regime from ticker's own IV term structure
+iv_expanding   = iv_slope > 0.02
+iv_compressing = iv_slope < -0.02
+
+# --- 12. HEADER INFO BAR ---
+slope_pct = iv_slope * 100
+vix_ref   = vix_delta_val
 st.info(
     f"📅 Data as of {data_time}  |  "
-    f"{ticker_input} ATM IV: {atm_iv * 100:.1f}%  |  "
-    f"VIX 5d Δ: {vix_delta_val:+.2f}pts  |  "
-    f"IV Strike Window: ±{iv_window*100:.0f}%"
+    f"{ticker_input} ATM IV: {ticker_iv * 100:.1f}%  |  "
+    f"{ticker_input} IV Slope (front vs back): {slope_pct:+.1f}pts  |  "
+    f"VIX 5d (market ref only): {vix_ref:+.2f}pts  |  "
+    f"IV Strike Window: ±{iv_window * 100:.0f}%"
 )
 
-# --- 11. SCOREBOARD METRICS ---
+# --- 13. SCOREBOARD METRICS ---
 col1, col2, col3, col4, col5, col6 = st.columns(6)
 with col1:
-    st.metric(label=f"{ticker_input} Spot Price",  value=f"${current_price:.2f}")
+    st.metric(label=f"{ticker_input} Spot Price", value=f"${current_price:.2f}")
 with col2:
-    st.metric(label="Zero-GEX Flip Strike",        value=f"${zero_gamma_strike:.2f}")
+    st.metric(label="Zero-GEX Flip Strike",       value=f"${zero_gamma_strike:.2f}")
 with col3:
-    st.metric(label="Total Net GEX ($)",           value=format_scaled_exposure(total_gex_dollar))
+    st.metric(label="Total Net GEX",              value=format_scaled_exposure(total_gex_dollar))
 with col4:
-    st.metric(label="Total GEX (Shares)",          value=format_scaled_shares(total_gex_shares))
+    st.metric(label="Total GEX (Shares)",         value=format_scaled_shares(total_gex_shares))
 with col5:
-    st.metric(label="ATM Implied Vol",             value=f"{atm_iv * 100:.1f}%")
+    st.metric(label="ATM Implied Vol",            value=f"{ticker_iv * 100:.1f}%")
 with col6:
     if is_approaching_zero:
         st.warning("⚡ TRANSITION")
@@ -313,83 +368,106 @@ with col6:
 
 st.divider()
 
-# --- 12. VANNA BANNER WITH EXPLANATION ---
-if vix_delta_val < -0.50 and total_vanna > 0:
+# --- 14. VANNA BANNER — TICKER-SPECIFIC IV SLOPE ---
+slope_display = abs(iv_slope * 100)
+if iv_compressing and total_vanna > 0:
     st.success(
-        f"🚀 **Vanna Tailwind Active** — VIX dropped {abs(vix_delta_val):.2f}pts this week.\n\n"
-        f"**What this means:** Vanna measures how much a dealer's delta exposure changes when "
-        f"implied volatility moves. When IV *falls*, dealers who sold options find their hedges "
-        f"are now over-hedged — they must *buy* the underlying stock to rebalance. "
-        f"This creates a mechanical, reflexive buying bid underneath the market that can "
-        f"lift prices even without fundamental news. The bigger the IV drop, the stronger the tailwind."
+        f"🚀 **Vanna Tailwind Active — {ticker_input} IV Compressing**\n\n"
+        f"**What is happening:** {ticker_input}'s own front-month implied volatility is "
+        f"**{slope_display:.1f}pts below** its back-month IV — the term structure is in "
+        f"contango (calm, normal shape). Near-term fear is fading.\n\n"
+        f"**Why it moves the stock:** As {ticker_input}'s IV falls, dealers who sold options "
+        f"find their hedges are now over-hedged. They must **buy** {ticker_input} shares to "
+        f"rebalance back to delta-neutral. This creates a mechanical, reflexive buying bid "
+        f"that can lift the stock even without any fundamental catalyst.\n\n"
+        f"*(VIX 5d for broad market context: {vix_ref:+.2f}pts — "
+        f"this signal is driven by {ticker_input}'s own options market, not the S&P 500.)*"
     )
-elif vix_delta_val > 0.50:
+elif iv_expanding and total_vanna > 0:
     st.error(
-        f"⚠️ **Vanna Headwind Active** — VIX rose {abs(vix_delta_val):.2f}pts this week.\n\n"
-        f"**What this means:** When IV *rises*, dealers' hedges are now under-hedged — they must "
-        f"*sell* the underlying stock to rebalance their delta exposure. This creates mechanical, "
-        f"reflexive selling pressure that amplifies drops. Rising IV + negative Vanna flow is "
-        f"one of the most dangerous structural combinations — it turns a normal selloff into a cascade."
+        f"⚠️ **Vanna Headwind Active — {ticker_input} IV Expanding**\n\n"
+        f"**What is happening:** {ticker_input}'s own front-month implied volatility is "
+        f"**{slope_display:.1f}pts above** its back-month IV — the term structure is in "
+        f"backwardation (fear, inverted shape). Near-term option buyers are paying a premium "
+        f"for protection.\n\n"
+        f"**Why it moves the stock:** As {ticker_input}'s IV rises, dealers who sold options "
+        f"find their hedges are now under-hedged. They must **sell** {ticker_input} shares to "
+        f"rebalance back to delta-neutral. This creates mechanical, reflexive selling pressure "
+        f"that amplifies drops and can turn a normal pullback into a cascade.\n\n"
+        f"*(VIX 5d for broad market context: {vix_ref:+.2f}pts — "
+        f"this signal is driven by {ticker_input}'s own options market, not the S&P 500.)*"
+    )
+else:
+    st.info(
+        f"➡️ **Vanna Neutral — {ticker_input} IV Stable**\n\n"
+        f"**What is happening:** {ticker_input}'s front-month and back-month IV are closely "
+        f"aligned (slope: {slope_pct:+.1f}pts). No significant vol expansion or compression "
+        f"detected in the term structure.\n\n"
+        f"**What this means:** Vanna flows are not a meaningful driver right now. "
+        f"Dealer delta rebalancing from IV moves is minimal. Focus on GEX regime and "
+        f"Charm flows as the primary structural signals instead.\n\n"
+        f"*(VIX 5d for broad market context: {vix_ref:+.2f}pts)*"
     )
 
-# --- 13. CHARM DAILY FLOW WITH EXPLANATION ---
+# --- 15. CHARM DAILY FLOW ---
 charm_val = format_scaled_exposure(total_charm)
 charm_dir = "buying" if total_charm > 0 else "selling"
 
 st.markdown(f"### ⏱️ Daily Charm Flow: {charm_val}")
 st.markdown(
     f"Charm measures how much dealer delta decays from time passing alone "
-    f"(independent of price or vol moves). "
-    f"Today's time decay forces dealers to mechanically **{charm_dir}** an estimated "
-    f"**{charm_val}** worth of underlying stock to stay delta-neutral. "
-    f"This flow happens every trading day on autopilot regardless of market direction."
+    f"(completely independent of price moves or IV changes). "
+    f"Today's time decay forces dealers to mechanically **{charm_dir}** "
+    f"an estimated **{charm_val}** worth of {ticker_input} stock purely to stay delta-neutral. "
+    f"This flow runs on autopilot every single trading day regardless of market direction — "
+    f"it is the most predictable and consistent of the three dealer hedging flows."
 )
 
+st.divider()
 
-
-# --- 14. STRUCTURAL PLAYBOOK ---
+# --- 16. STRUCTURAL PLAYBOOK ---
 st.subheader("🎯 Structural Playbook")
 
 if is_approaching_zero:
+    pct_display = f"{pct_from_flip * 100:.2f}"
     st.warning(
-        f"🚨 **TRANSITION ZONE** — Price is within {pct_from_flip*100:.2f}% of the Zero-Gamma node "
+        f"🚨 **TRANSITION ZONE** — Price is within {pct_display}% of the Zero-Gamma node "
         f"(${zero_gamma_strike:.2f}). Structural gravity is offline. "
         f"Stand aside until price confirms a directional break above or below this level."
     )
 else:
-    regime = "above" if current_price > zero_gamma_strike else "below"
-    st.info(
-        f"ℹ️ Price is {pct_from_flip*100:.2f}% {regime} the Zero-Gamma Strike (${zero_gamma_strike:.2f})."
-    )
+    regime      = "above" if current_price > zero_gamma_strike else "below"
+    pct_display = f"{pct_from_flip * 100:.2f}"
+    st.info(f"ℹ️ Price is **{pct_display}%** {regime} the Zero-Gamma Strike (${zero_gamma_strike:.2f}).")
 
 col_pb1, col_pb2 = st.columns(2)
 with col_pb1:
     st.markdown(f"""
-    ### 🟢 Above Zero-Gamma (> ${zero_gamma_strike:.2f})
-    * **What dealers do:** Net long gamma — they buy every dip and sell every rip to stay hedged.
-    * **Market effect:** Price gets "pinned" — ranges compress, rebounds are quick, trends fade.
-    * **Approved plays:** Sell OTM puts, cash-secured puts, iron condors, covered calls.
+### 🟢 Above Zero-Gamma (> ${zero_gamma_strike:.2f})
+* **What dealers do:** Net long gamma — they buy every dip and sell every rip to stay hedged.
+* **Market effect:** Price gets pinned — ranges compress, rebounds are quick, trends fade fast.
+* **Approved plays:** Sell OTM puts, cash-secured puts, iron condors, covered calls.
     """)
 with col_pb2:
     st.markdown(f"""
-    ### 🔴 Below Zero-Gamma (< ${zero_gamma_strike:.2f})
-    * **What dealers do:** Net short gamma — they sell every drop and buy every rip to stay hedged.
-    * **Market effect:** Moves get amplified — drops accelerate, bounces are weak and short-lived.
-    * **Approved plays:** Long puts, long VIX calls, reduce or fully hedge long exposure.
+### 🔴 Below Zero-Gamma (< ${zero_gamma_strike:.2f})
+* **What dealers do:** Net short gamma — they sell every drop and buy every rip to stay hedged.
+* **Market effect:** Moves get amplified — drops accelerate, bounces are weak and short-lived.
+* **Approved plays:** Long puts, long VIX calls, reduce or fully hedge long exposure.
     """)
 
 st.divider()
 
-# --- 15. GAMMA WALL CHART ---
+# --- 17. GAMMA WALL CHART ---
 st.subheader("📊 GEX Gamma Wall Profile")
 
 with st.container(border=True):
     st.markdown("""
-    **Chart Legend:**
-    * 🔵 **Blue dashed** = Current spot price
-    * 🟣 **Purple dotted** = Zero-gamma flip node (where cumulative GEX crosses zero — the structural tipping point)
-    * 🟠 **Orange dotted** = Max pain strike (strike causing maximum loss to option buyers at expiry — acts as gravitational pin)
-    * 🟡 **Yellow line** = Cumulative GEX summation (running total across strikes — zero crossing = flip node)
+**Chart Legend:**
+* 🔵 **Blue dashed** = Current spot price
+* 🟣 **Purple dotted** = Zero-gamma flip node (where cumulative GEX crosses zero — structural tipping point)
+* 🟠 **Orange dotted** = Max pain strike (strike causing maximum loss to option buyers at expiry — gravitational pin)
+* 🟡 **Yellow line** = Cumulative GEX summation (running total across strikes — zero crossing = flip node)
     """)
 
 chart_mode = st.radio(
@@ -433,7 +511,7 @@ fig.add_trace(go.Scatter(
 ))
 
 fig.add_vline(x=current_price,     line_dash="dash", line_color="#3498db", line_width=2.5,
-              annotation_text=" SPOT ", annotation_position="top right")
+              annotation_text=" SPOT ",      annotation_position="top right")
 fig.add_vline(x=zero_gamma_strike, line_dash="dot",  line_color="#9b59b6", line_width=2.5,
               annotation_text=" FLIP NODE ", annotation_position="top left")
 if max_pain_strike is not None:
@@ -450,7 +528,7 @@ fig.update_layout(
 )
 st.plotly_chart(fig, use_container_width=True)
 
-# --- 16. CSV EXPORT ---
+# --- 18. CSV EXPORT ---
 st.divider()
 st.subheader("💾 Export Data for Backtesting")
 
