@@ -50,7 +50,7 @@ def process_chain_vectorized(df, option_type, S, T, r_rate, dte_weight):
     
     return df[['strike', 'GEX', 'Vanna', 'Charm', 'IV_Raw', 'Option_Type']]
 
-# --- 3. VECTORIZED MAX PAIN ENGINE (O(n) BROADCASTED) ---
+# --- 3. VECTORIZED MAX PAIN ENGINE ---
 def calculate_max_pain_vectorized(opt_chain):
     try:
         calls = opt_chain.calls[['strike', 'openInterest']].dropna()
@@ -76,7 +76,7 @@ def calculate_max_pain_vectorized(opt_chain):
     except Exception:
         return None
 
-# --- SIDEBAR CONTROLS & REFERENCE ---
+# --- 4. SIDEBAR CONTROLS & RESTORED ADHD PLAYBOOK ---
 with st.sidebar:
     st.header("🎛️ Parameters")
     ticker_input = st.text_input(label="Target Ticker Symbol", value="SPY").upper()
@@ -86,7 +86,22 @@ with st.sidebar:
     zoom_pct = st.slider("Chart Zoom Window (±%)", min_value=3, max_value=15, value=6, step=1) / 100.0
     risk_free_rate = st.number_input("Risk-Free Rate (r)", value=0.05, step=0.01)
 
-# --- 4. DATA ENGINE ---
+    # --- RESTORED PERSISTENT ADHD REFERENCE ENGINE ---
+    st.markdown("---")
+    st.subheader("🧠 2-Second Cheat Sheet Playbook")
+    with st.container(border=True):
+        st.markdown("""
+        **🟢 Above Purple Line (Calm Zone):**
+        Market is highly stable. Intermediary machines sell rallies and buy dips. bias favors premium sellers and standard bounces.
+        
+        **🔴 Below Purple Line (Danger Zone):**
+        Slippery slope. Intermediary machines are forced to sell drops and chase momentum, triggering wider swings.
+        
+        **⚡ Stacking Directly On the Line:**
+        Total randomness and algorithm fighting. Keep your hands off the keyboard and wait for a breakout direction!
+        """)
+
+# --- 5. DATA ENGINE ---
 with st.spinner("Executing Vectorized Volatility Quant Matrices..."):
     try:
         stock = yf.Ticker(ticker_input)
@@ -143,12 +158,9 @@ def load_and_compute_gex_engine(ticker, r_rate, current_price):
         master_df = pd.concat(compiled_dfs, ignore_index=True)
         
         # --- IMPROVEMENT: FILTER ILLIQUID STRIKES BEFORE GLOBAL ZERO-GAMMA CALCULATION ---
-        # Prevents far OTM noise from skewing the final zero-gamma node positioning.
         master_df = master_df[master_df.groupby('strike')['GEX'].transform('sum').abs() > 10000]
         
         # --- ARCHITECTURE DESIGN CHOICE NOTE ---
-        # Aggregation over strikes drops 'Option_Type'. Split matrices are explicitly parsed 
-        # using the pristine source frames first, then joined back to maintain clear categorical data.
         agg_df = master_df.groupby('strike').agg({
             'GEX': 'sum', 'Vanna': 'sum', 'Charm': 'sum', 'IV_Raw': 'mean'
         }).reset_index()
@@ -190,11 +202,11 @@ if data_matrix is not None:
         st.metric(label="Tipping Point (Zero GEX)", value=f"${zero_gamma_strike:.2f}")
     with col3:
         if is_approaching_zero:
-            st.warning("⚡ TRANSITION BOUNDARY")
+            st.warning("⚡ TRANSITION ZONE")
         elif total_gex > 0:
-            st.success("🟢 POSITIVE GEX REGIME")
+            st.success("🟢 CALM MARKET REGIME")
         else:
-            st.error("🔴 NEGATIVE GEX REGIME")
+            st.error("🔴 ACCELERATION REGIME")
 
     st.divider()
 
@@ -255,29 +267,4 @@ if data_matrix is not None:
             hovertemplate="Strike: %{x}<br>Call GEX: $ %{y:,.0f}<extra></extra>"
         ))
         fig.add_trace(go.Bar(
-            x=filtered_df['strike'], y=filtered_df['Put_GEX'],
-            marker_color='#e74c3c', showlegend=False,
-            hovertemplate="Strike: %{x}<br>Put GEX: $ %{y:,.0f}<extra></extra>"
-        ))
-        fig.update_layout(barmode='group')
-    
-    df_sorted_display = data_matrix[(data_matrix['strike'] >= lower_bound) & (data_matrix['strike'] <= upper_bound)].sort_values('strike').copy()
-    df_sorted_display['cum_GEX_display'] = df_sorted_display['GEX'].cumsum()
-    
-    fig.add_trace(go.Scatter(
-        x=df_sorted_display['strike'], y=df_sorted_display['cum_GEX_display'],
-        line=dict(color='#f1c40f', width=3), showlegend=False
-    ))
-    
-    fig.add_vline(x=current_price, line_dash="dash", line_color="#3498db", line_width=2.5)
-    fig.add_vline(x=zero_gamma_strike, line_dash="dot", line_color="#9b59b6", line_width=2.5)
-        
-    fig.update_layout(
-        template="plotly_dark",
-        xaxis_title="Strike Price ($)", yaxis_title="Running Exposure Capacity Sum ($)",
-        margin=dict(l=40, r=40, t=20, b=40), height=600,
-        showlegend=False
-    )
-    st.plotly_chart(fig, use_container_width=True)
-else:
-    st.error("❌ Data matrix parsing execution failed.")
+            x=filtered_df['strike'], y=filtered_df
