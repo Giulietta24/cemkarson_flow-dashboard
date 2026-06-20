@@ -4,7 +4,7 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from scipy.stats import norm
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
 
 # --- 1. PAGE SETUP & CONFIGURATION ---
@@ -60,11 +60,8 @@ def process_chain_vectorized(df, option_type, S, T, r_rate, dte_weight):
         d2 = d1 - iv * np.sqrt(T)
         
         pdf_d1 = norm.pdf(d1)
-        
         gamma = np.nan_to_num(pdf_d1 / (S * iv * np.sqrt(T)), nan=0.0, posinf=0.0)
         vanna = np.nan_to_num(-pdf_d1 * (d2 / iv), nan=0.0, posinf=0.0)
-        
-        # Charm sign convention: delta decay per calendar day
         charm = np.nan_to_num(pdf_d1 * (r_rate / (iv * np.sqrt(T)) - (d1 * d2) / (2 * T)) * (-1.0 / 365.0), nan=0.0, posinf=0.0)
         
         sign = 1.0 if option_type == 'call' else -1.0
@@ -100,7 +97,22 @@ def calculate_max_pain_vectorized(opt_chain):
     except Exception:
         return None
 
-# --- 5. DATA INGESTION ENGINE ---
+# --- 5. HIGH-SPEED VIX EXTRACTION ENGINE ---
+@st.cache_data(ttl=900)
+def fetch_vix_context():
+    try:
+        vix = yf.Ticker("^VIX")
+        hist = vix.history(period="7d")
+        if len(hist) >= 5:
+            current_vix = hist['Close'].iloc[-1]
+            prior_vix = hist['Close'].iloc[-5]
+            change = current_vix - prior_vix
+            return current_vix, change
+    except Exception:
+        pass
+    return 0.0, 0.0
+
+# --- 6. DATA INGESTION ENGINE ---
 with st.spinner("Executing Volatility Quant Matrices..."):
     try:
         stock = yf.Ticker(ticker_input)
@@ -155,8 +167,6 @@ def load_and_compute_gex_engine(ticker, r_rate, current_price):
             return None, atm_iv_now, max_pain_val, "No Compiled Data"
             
         master_df = pd.concat(compiled_dfs, ignore_index=True)
-        
-        # Minimum Liquidity Filter to drop noise out of calculation tracking
         master_df = master_df[master_df.groupby('strike')['GEX'].transform('sum').abs() > 10000]
         
         agg_df = master_df.groupby('strike').agg({
@@ -176,8 +186,9 @@ def load_and_compute_gex_engine(ticker, r_rate, current_price):
         return None, None, None, None
 
 data_matrix, atm_iv, max_pain_strike, data_time = load_and_compute_gex_engine(ticker_input, risk_free_rate, current_price)
+vix_val, vix_5d_change = fetch_vix_context()
 
-# --- 6. DASHBOARD MAIN DISPLAY REGIME ---
+# --- 7. DASHBOARD MAIN DISPLAY REGIME ---
 if data_matrix is not None:
     agg_df_sorted = data_matrix.sort_values('strike').copy()
     agg_df_sorted['cumulative_GEX'] = agg_df_sorted['GEX'].cumsum()
@@ -188,30 +199,32 @@ if data_matrix is not None:
     upper_bound = current_price * (1.0 + zoom_pct)
     filtered_df = data_matrix[(data_matrix['strike'] >= lower_bound) & (data_matrix['strike'] <= upper_bound)].copy()
 
-    # --- EXPOSURE CAPACITY CALCULATIONS ---
     total_gex_dollar = data_matrix['GEX'].sum()
     total_gex_shares = total_gex_dollar / current_price
     
     pct_from_flip = (abs(current_price - zero_gamma_strike) / current_price)
     is_approaching_zero = pct_from_flip <= 0.01
 
-    # --- SCOREBOARD METRICS ROW (WITH COHERENT VALUE HEADERS) ---
-    col1, col2, col3, col4, col5 = st.columns(5)
+    # --- SCOREBOARD METRICS ROW (EXPANDED TO 6 COLUMNS) ---
+    col1, col2, col3, col4, col5, col6 = st.columns(6)
     with col1:
-        st.metric(label=f"Current Price ({ticker_input})", value=f"${current_price:.2f}")
+        st.metric(label=f"Price ({ticker_input})", value=f"${current_price:.2f}")
     with col2:
-        st.metric(label="Zero GEX Tipping Node", value=f"${zero_gamma_strike:.2f}")
+        st.metric(label="Zero GEX Flip Node", value=f"${zero_gamma_strike:.2f}")
     with col3:
-        st.metric(label="Total Net GEX Amount", value=f"${total_gex_dollar:,.0f}")
+        st.metric(label="Total Net GEX", value=f"${total_gex_dollar:,.0f}")
     with col4:
         st.metric(label="Total GEX (Shares)", value=f"{total_gex_shares:,.0f}")
     with col5:
+        vix_label = f"VIX: {vix_val:.2f}"
+        st.metric(label="VIX 5D Change", value=vix_label, delta=f"{vix_5d_change:+.2f}", delta_color="inverse")
+    with col6:
         if is_approaching_zero:
-            st.warning("⚡ TRANSITION ZONE")
+            st.warning("⚡ TRANSITION")
         elif total_gex_dollar > 0:
-            st.success("🟢 CALM MARKET REGIME")
+            st.success("🟢 CALM REGIME")
         else:
-            st.error("🔴 ACCELERATION REGIME")
+            st.error("🔴 ACCELERATION")
 
     st.divider()
 
@@ -219,45 +232,35 @@ if data_matrix is not None:
     st.subheader("🎯 Structural Playbook Guidelines")
     
     if is_approaching_zero:
-        st.warning(f"🚨 **MODEL SIGNAL: TRANSITION ZONE RANGE INTRUSION.** Price is within {pct_from_flip*100:.1f}% of the calculated Zero-Gamma node (${zero_gamma_strike:.2f}). Historic baseline metrics reflect increased asset variance.")
+        st.warning(f"🚨 **MODEL SIGNAL: TRANSITION ZONE RANGE INTRUSION.** Price is within {pct_from_flip*100:.1f}% of the calculated Zero-Gamma node (${zero_gamma_strike:.2f}).")
     else:
         st.info(f"ℹ️ **Tipping Point Proximity:** Price is currently {pct_from_flip*100:.1f}% away from the calculated Zero-Gamma Strike (${zero_gamma_strike:.2f}).")
 
     if len(filtered_df) < 5:
-        st.warning("⚠️ **DATA QUALITY NOTICE:** Low strike density detected inside current zoom window. Results may appear noisy or truncated.")
+        st.warning("⚠️ **DATA QUALITY NOTICE:** Low strike density detected inside current zoom window.")
 
     col_pb1, col_pb2 = st.columns(2)
     with col_pb1:
         st.markdown(f"""
         ### 🟢 ABOVE ESTIMATED ZERO-GAMMA (> ${zero_gamma_strike:.2f})
         * **The Alignment:** Historical bias favors lower systemic variance and compressed trading scales.
-        * **Underlying Model Logic:** Proxy formulas project supportive counter-trend inventory balancing dynamics from options intermediaries.
+        * **Underlying Model Logic:** Options intermediaries balance inventory by counter-trend buying/selling.
         """)
     with col_pb2:
         st.markdown(f"""
         ### 🔴 BELOW ESTIMATED ZERO-GAMMA (< ${zero_gamma_strike:.2f})
         * **The Alignment:** Higher statistical tail risks and accelerated intraday expansion metrics.
-        * **Underlying Model Logic:** Intermediary positioning proxies display characteristics that structurally align with down-trending momentum propagation.
+        * **Underlying Model Logic:** Intermediaries chase momentum to maintain portfolio risk neutralization benchmarks.
         """)
 
     st.divider()
 
-    # --- 7. PLOTLY CHART COMPONENT ---
+    # --- 8. PLOTLY CHART COMPONENT ---
     st.subheader("📊 Cumulative Volatility Profile Architecture")
     
-    with st.container(border=True):
-        st.markdown(f"""
-        ### 🔑 Chart Legend Key
-        * 🔵 **BLUE DASHED LINE** = **Price Now:** Current stock spot execution price (${current_price:.2f}).
-        * 🟣 **PURPLE DOTTED LINE** = **Estimated Zero-Gamma Node:** Calculated across the global series (${zero_gamma_strike:.2f}).
-        * 🟠 **ORANGE DOTTED LINE** = **Max Pain Node:** Striking matrix concentration floor (${max_pain_strike if max_pain_strike else 0:.2f}).
-        * 🟡 **YELLOW LINE** = **Cumulative GEX Summation Profile:** Tracking the running aggregate sum across available strikes.
-        """)
-
     chart_mode = st.radio("Display Profile Selection", ["Net GEX Profile", "Call / Put Distribution Split"], horizontal=True)
     
     fig = go.Figure()
-    
     if chart_mode == "Net GEX Profile":
         fig.add_trace(go.Bar(
             x=filtered_df['strike'], y=filtered_df['GEX'],
@@ -267,13 +270,11 @@ if data_matrix is not None:
     else:
         fig.add_trace(go.Bar(
             x=filtered_df['strike'], y=filtered_df['Call_GEX'],
-            marker_color='#2ecc71', showlegend=False,
-            hovertemplate="Strike: %{x}<br>Call GEX: $ %{y:,.0f}<extra></extra>"
+            marker_color='#2ecc71', showlegend=False, hovertemplate="Strike: %{x}<br>Call GEX: $ %{y:,.0f}<extra></extra>"
         ))
         fig.add_trace(go.Bar(
             x=filtered_df['strike'], y=filtered_df['Put_GEX'],
-            marker_color='#e74c3c', showlegend=False,
-            hovertemplate="Strike: %{x}<br>Put GEX: $ %{y:,.0f}<extra></extra>"
+            marker_color='#e74c3c', showlegend=False, hovertemplate="Strike: %{x}<br>Put GEX: $ %{y:,.0f}<extra></extra>"
         ))
         fig.update_layout(barmode='group')
     
@@ -285,19 +286,27 @@ if data_matrix is not None:
         line=dict(color='#f1c40f', width=3), showlegend=False
     ))
     
-    # Render all alignment anchor markers cleanly
     fig.add_vline(x=current_price, line_dash="dash", line_color="#3498db", line_width=2.5)
     fig.add_vline(x=zero_gamma_strike, line_dash="dot", line_color="#9b59b6", line_width=2.5)
-    
     if max_pain_strike is not None:
         fig.add_vline(x=max_pain_strike, line_dash="dot", line_color="#e67e22", line_width=2.5)
         
     fig.update_layout(
-        template="plotly_dark",
-        xaxis_title="Strike Price ($)", yaxis_title="Exposure Capacity Sum ($)",
-        margin=dict(l=40, r=40, t=20, b=40), height=600,
-        showlegend=False
+        template="plotly_dark", xaxis_title="Strike Price ($)", yaxis_title="Exposure Capacity Sum ($)",
+        margin=dict(l=40, r=40, t=20, b=40), height=600, showlegend=False
     )
     st.plotly_chart(fig, use_container_width=True)
+
+    # --- 9. QUANT BACKTESTING EXPORT ENGINE ---
+    st.divider()
+    st.subheader("💾 Export Flow Data For Offline Backtesting")
+    
+    csv_buffer = data_matrix.to_csv(index=False).encode('utf-8')
+    st.download_button(
+        label="📥 Export Full Structural Data Matrix to CSV",
+        data=csv_buffer,
+        file_name=f"{ticker_input}_GEX_Matrix_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+        mime="text/csv"
+    )
 else:
     st.error("❌ Data matrix parsing execution failed.")
