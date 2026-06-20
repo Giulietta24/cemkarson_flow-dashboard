@@ -148,4 +148,161 @@ def load_and_compute_gex_engine(ticker, r_rate, current_price):
                 T = dte / 365.0
                 
                 opt_chain = stock.option_chain(exp_str)
-                call_res = process_chain_vectorized(opt_chain.calls, 'call', current_price
+                call_res = process_chain_vectorized(opt_chain.calls, 'call', current_price, T, r_rate, dte_weight)
+                put_res = process_chain_vectorized(opt_chain.puts, 'put', current_price, T, r_rate, dte_weight)
+                
+                if not call_res.empty: compiled_dfs.append(call_res)
+                if not put_res.empty: compiled_dfs.append(put_res)
+            except Exception:
+                continue
+            
+        if not compiled_dfs:
+            return None, atm_iv_now, vix_delta_val, max_pain_val, "No Compiled Data"
+            
+        master_df = pd.concat(compiled_dfs, ignore_index=True)
+        agg_df = master_df.groupby('strike').agg({
+            'GEX': 'sum', 'Vanna': 'sum', 'Charm': 'sum', 'IV_Raw': 'mean'
+        }).reset_index()
+        
+        raw_call_split = master_df[master_df['Option_Type'] == 'call'].groupby('strike')['GEX'].sum().rename('Call_GEX').reset_index()
+        raw_put_split = master_df[master_df['Option_Type'] == 'put'].groupby('strike')['GEX'].sum().rename('Put_GEX').reset_index()
+        split_matrix = pd.merge(raw_call_split, raw_put_split, on='strike', how='outer').fillna(0.0)
+        agg_df = pd.merge(agg_df, split_matrix, on='strike', how='left').fillna(0.0)
+        
+        est_tz = pytz.timezone('US/Eastern')
+        fetch_timestamp = datetime.now(est_tz).strftime("%Y-%m-%d %I:%M:%S %p EST")
+        
+        return agg_df, fetch_timestamp, atm_iv_now, vix_delta_val, max_pain_val
+        
+    except Exception:
+        return None, None, None, None, None
+
+data_matrix, data_time, atm_iv, vix_delta, max_pain_strike = load_and_compute_gex_engine(ticker_input, risk_free_rate, current_price)
+
+if data_matrix is not None:
+    agg_df_sorted = data_matrix.sort_values('strike').copy()
+    agg_df_sorted['cumulative_GEX'] = agg_df_sorted['GEX'].cumsum()
+    sign_changes = agg_df_sorted[(agg_df_sorted['cumulative_GEX'] * agg_df_sorted['cumulative_GEX'].shift(1) < 0)]
+    zero_gamma_strike = sign_changes['strike'].iloc[0] if not sign_changes.empty else current_price
+
+    lower_bound = current_price * (1.0 - zoom_pct)
+    upper_bound = current_price * (1.0 + zoom_pct)
+    filtered_df = data_matrix[(data_matrix['strike'] >= lower_bound) & (data_matrix['strike'] <= upper_bound)].copy()
+
+    total_gex = filtered_df['GEX'].sum()
+    total_charm = filtered_df['Charm'].sum()
+    charm_shares = total_charm / current_price
+    
+    pct_from_flip = (abs(current_price - zero_gamma_strike) / current_price)
+    is_approaching_zero = pct_from_flip <= 0.015
+
+    def to_shorthand(value):
+        abs_val = abs(value)
+        sign_str = "-" if value < 0 else ""
+        if abs_val >= 1_000_000_000: return f"{sign_str}${abs_val / 1_000_000_000:.2f}B"
+        elif abs_val >= 1_000_000: return f"{sign_str}${abs_val / 1_000_000:.2f}M"
+        elif abs_val >= 1_000: return f"{sign_str}${abs_val / 1_000:.2f}K"
+        return f"{sign_str}${abs_val:.2f}"
+        
+    def to_shorthand_shares(value):
+        abs_val = abs(value)
+        sign_str = "-" if value < 0 else ""
+        if abs_val >= 1_000_000: return f"{sign_str}{abs_val / 1_000_000:.1f}M shrs"
+        elif abs_val >= 1_000: return f"{sign_str}{abs_val / 1_000:.1f}K shrs"
+        return f"{sign_str}{abs_val:.0f} shrs"
+
+    # --- DISPLAY METRICS MATRIX ---
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric(label=f"Current {ticker_input} Price", value=f"${current_price:.2f}")
+    with col2:
+        st.metric(label="Total Gamma Exposure ($ GEX)", value=to_shorthand(total_gex))
+    with col3:
+        st.metric(
+            label="Daily Charm Flow", 
+            value=to_shorthand(total_charm), 
+            delta=to_shorthand_shares(charm_shares),
+            delta_color="off" if charm_shares >= 0 else "inverse"
+        )
+    with col4:
+        state_label = "⚡ TRANSITION BOUNDARY" if is_approaching_zero else ("🟢 POSITIVE GEX REGIME" if total_gex > 0 else "🔴 NEGATIVE GEX REGIME")
+        st.metric(label="System Status", value=state_label)
+
+    st.caption(f"🎯 **True Cumulative Zero-Gamma Strike:** ${zero_gamma_strike:.2f} | **Gravitational Max Pain Anchor:** ${max_pain_strike if max_pain_strike else 'N/A'}")
+    st.divider()
+
+    # --- STRUCTURAL PLAYBOOK GUIDELINES ---
+    st.subheader("🎯 Structural Playbook Guidelines")
+    
+    if is_approaching_zero:
+        st.error(f"🚨 **MODEL SIGNAL: TRANSITION ZONE RANGE INTRUSION.** Price is within {pct_from_flip*100:.1f}% of the calculated Zero-Gamma node (${zero_gamma_strike:.2f}). Historic baseline metrics reflect increased asset variance.")
+    else:
+        st.info(f"ℹ️ **Tipping Point Proximity:** Price is currently {pct_from_flip*100:.1f}% away from the calculated Zero-Gamma Strike (${zero_gamma_strike:.2f}).")
+
+    col_pb1, col_pb2 = st.columns(2)
+    with col_pb1:
+        st.success(f"🟢 **REGIME CONFIGURATION: ABOVE ESTIMATED ZERO-GAMMA (> ${zero_gamma_strike:.2f})**\n\n* **The Alignment:** Historical bias favors lower systemic variance and compressed trading scales.\n* **Underlying Model Logic:** Proxy formulas project supportive counter-trend inventory balancing dynamics from options intermediaries.")
+    with col_pb2:
+        st.error(f"🔴 **REGIME CONFIGURATION: BELOW ESTIMATED ZERO-GAMMA (< ${zero_gamma_strike:.2f})**\n\n* **The Alignment:** Higher statistical tail risks and accelerated intraday expansion metrics.\n* **Underlying Model Logic:** Intermediary positioning proxies display characteristics that structurally align with down-trending momentum propagation.")
+
+    st.divider()
+
+    # --- 7. PLOTLY CHART COMPONENT ---
+    st.subheader("📊 Cumulative Volatility Profile Architecture")
+    
+    with st.container(border=True):
+        st.markdown(f"""
+        ### 🔑 Chart Legend Key
+        * 🔵 **BLUE DASHED LINE** = **Price Now:** Current stock spot execution price (${current_price:.2f}).
+        * 🟣 **PURPLE DOTTED LINE** = **Estimated Zero-Gamma Node:** Calculated across the global series (${zero_gamma_strike:.2f}).
+        * 🟡 **YELLOW LINE** = **Cumulative GEX Summation Profile:** Tracking the running aggregate sum across available strikes.
+        * 🟩 **GREEN BARS** = Call-dominated net stabilizer profile proxies.
+        * 🟥 **RED BARS** = Put-dominated net accelerator profile proxies.
+        """)
+
+    chart_mode = st.radio("Display Profile Selection", ["Net GEX Profile", "Call / Put Distribution Split"], horizontal=True)
+    
+    fig = go.Figure()
+    
+    if chart_mode == "Net GEX Profile":
+        fig.add_trace(go.Bar(
+            x=filtered_df['strike'], y=filtered_df['GEX'],
+            marker_color=np.where(filtered_df['GEX'] >= 0, '#2ecc71', '#e74c3c'),
+            showlegend=False, hovertemplate="Strike: %{x}<br>Net GEX: $ %{y:,.0f}<extra></extra>"
+        ))
+    else:
+        fig.add_trace(go.Bar(
+            x=filtered_df['strike'], y=filtered_df['Call_GEX'],
+            marker_color='#2ecc71', showlegend=False,
+            hovertemplate="Strike: %{x}<br>Call GEX: $ %{y:,.0f}<extra></extra>"
+        ))
+        fig.add_trace(go.Bar(
+            x=filtered_df['strike'], y=filtered_df['Put_GEX'],
+            marker_color='#e74c3c', showlegend=False,
+            hovertemplate="Strike: %{x}<br>Put GEX: $ %{y:,.0f}<extra></extra>"
+        ))
+        fig.update_layout(barmode='group')
+    
+    df_sorted_display = data_matrix[(data_matrix['strike'] >= lower_bound) & (data_matrix['strike'] <= upper_bound)].sort_values('strike').copy()
+    df_sorted_display['cum_GEX_display'] = df_sorted_display['GEX'].cumsum()
+    
+    fig.add_trace(go.Scatter(
+        x=df_sorted_display['strike'], y=df_sorted_display['cum_GEX_display'],
+        line=dict(color='#f1c40f', width=3), showlegend=False
+    ))
+    
+    # FIX: Correctly structured, fully-enclosed parameters for reference lines to avoid syntax errors
+    fig.add_vline(x=current_price, line_dash="dash", line_color="#3498db", line_width=2.5)
+    fig.add_vline(x=zero_gamma_strike, line_dash="dot", line_color="#9b59b6", line_width=2.5)
+    if max_pain_strike:
+        fig.add_vline(x=max_pain_strike, line_dash="dot", line_color="#e67e22", line_width=2)
+        
+    fig.update_layout(
+        template="plotly_dark",
+        xaxis_title="Strike Price ($)", yaxis_title="Running Exposure Capacity Sum ($)",
+        margin=dict(l=40, r=40, t=20, b=40), height=600,
+        showlegend=False
+    )
+    st.plotly_chart(fig, use_container_width=True)
+else:
+    st.error("❌ Data matrix parsing execution failed.")
