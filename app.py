@@ -203,4 +203,81 @@ if data_matrix is not None:
     
     # --- IMPROVEMENT: BALANCED INFRASTRUCTURE CONTRAST (st.warning instead of st.error) ---
     if is_approaching_zero:
-        st.warning(f"🚨 **MODEL SIGNAL: TRANSITION ZONE RANGE INTR
+        st.warning(f"🚨 **MODEL SIGNAL: TRANSITION ZONE RANGE INTRUSION.** Price is within {pct_from_flip*100:.1f}% of the calculated Zero-Gamma node (${zero_gamma_strike:.2f}). Historic baseline metrics reflect increased asset variance and less deterministic order-book depth.")
+    else:
+        st.info(f"ℹ️ **Tipping Point Proximity:** Price is currently {pct_from_flip*100:.1f}% away from the calculated Zero-Gamma Strike (${zero_gamma_strike:.2f}).")
+
+    # --- IMPROVEMENT: DATA QUALITY DENSITY WARNING ---
+    if len(filtered_df) < 5:
+        st.warning("⚠️ **DATA QUALITY NOTICE:** Low strike density detected inside current zoom window. Results may appear noisy or truncated.")
+
+    col_pb1, col_pb2 = st.columns(2)
+    with col_pb1:
+        st.markdown(f"""
+        ### 🟢 ABOVE ESTIMATED ZERO-GAMMA (> ${zero_gamma_strike:.2f})
+        * **The Alignment:** Historical bias favors lower systemic variance and compressed trading scales.
+        * **Underlying Model Logic:** Proxy formulas project supportive counter-trend inventory balancing dynamics from options intermediaries.
+        """)
+    with col_pb2:
+        st.markdown(f"""
+        ### 🔴 BELOW ESTIMATED ZERO-GAMMA (< ${zero_gamma_strike:.2f})
+        * **The Alignment:** Higher statistical tail risks and accelerated intraday expansion metrics.
+        * **Underlying Model Logic:** Intermediary positioning proxies display characteristics that structurally align with down-trending momentum propagation.
+        """)
+
+    st.divider()
+
+    # --- 7. PLOTLY CHART COMPONENT ---
+    st.subheader("📊 Cumulative Volatility Profile Architecture")
+    
+    with st.container(border=True):
+        st.markdown(f"""
+        ### 🔑 Chart Legend Key
+        * 🔵 **BLUE DASHED LINE** = **Price Now:** Current stock spot execution price (${current_price:.2f}).
+        * 🟣 **PURPLE DOTTED LINE** = **Estimated Zero-Gamma Node:** Calculated across the global series (${zero_gamma_strike:.2f}).
+        * 🟡 **YELLOW LINE** = **Cumulative GEX Summation Profile:** Tracking the running aggregate sum across available strikes.
+        """)
+
+    chart_mode = st.radio("Display Profile Selection", ["Net GEX Profile", "Call / Put Distribution Split"], horizontal=True)
+    
+    fig = go.Figure()
+    
+    if chart_mode == "Net GEX Profile":
+        fig.add_trace(go.Bar(
+            x=filtered_df['strike'], y=filtered_df['GEX'],
+            marker_color=np.where(filtered_df['GEX'] >= 0, '#2ecc71', '#e74c3c'),
+            showlegend=False, hovertemplate="Strike: %{x}<br>Net GEX: $ %{y:,.0f}<extra></extra>"
+        ))
+    else:
+        fig.add_trace(go.Bar(
+            x=filtered_df['strike'], y=filtered_df['Call_GEX'],
+            marker_color='#2ecc71', showlegend=False,
+            hovertemplate="Strike: %{x}<br>Call GEX: $ %{y:,.0f}<extra></extra>"
+        ))
+        fig.add_trace(go.Bar(
+            x=filtered_df['strike'], y=filtered_df['Put_GEX'],
+            marker_color='#e74c3c', showlegend=False,
+            hovertemplate="Strike: %{x}<br>Put GEX: $ %{y:,.0f}<extra></extra>"
+        ))
+        fig.update_layout(barmode='group')
+    
+    df_sorted_display = data_matrix[(data_matrix['strike'] >= lower_bound) & (data_matrix['strike'] <= upper_bound)].sort_values('strike').copy()
+    df_sorted_display['cum_GEX_display'] = df_sorted_display['GEX'].cumsum()
+    
+    fig.add_trace(go.Scatter(
+        x=df_sorted_display['strike'], y=df_sorted_display['cum_GEX_display'],
+        line=dict(color='#f1c40f', width=3), showlegend=False
+    ))
+    
+    fig.add_vline(x=current_price, line_dash="dash", line_color="#3498db", line_width=2.5)
+    fig.add_vline(x=zero_gamma_strike, line_dash="dot", line_color="#9b59b6", line_width=2.5)
+        
+    fig.update_layout(
+        template="plotly_dark",
+        xaxis_title="Strike Price ($)", yaxis_title="Running Exposure Capacity Sum ($)",
+        margin=dict(l=40, r=40, t=20, b=40), height=600,
+        showlegend=False
+    )
+    st.plotly_chart(fig, use_container_width=True)
+else:
+    st.error("❌ Data matrix parsing execution failed.")
