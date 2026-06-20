@@ -249,23 +249,22 @@ if data_matrix is None:
     st.error("❌ No options data matched your DTE filter range. Try widening filters.")
     st.stop()
 
-# --- 7. DASHBOARD MAIN DISPLAY REGIME ---
+# --- 7. REGIME VIEW (UPGRADED TIPPING POINT LOGIC) ---
 agg_df_sorted = data_matrix.sort_values('strike').copy()
 agg_df_sorted['cumulative_GEX'] = agg_df_sorted['GEX'].cumsum()
 
-sign_changes = agg_df_sorted[(agg_df_sorted['cumulative_GEX'] * agg_df_sorted['cumulative_GEX'].shift(1) < 0)]
-zero_gamma_strike = sign_changes['strike'].iloc[0] if not sign_changes.empty else current_price
+cum_g = agg_df_sorted['cumulative_GEX']
+sign_changes = agg_df_sorted[(cum_g * cum_g.shift(1) < 0)]
+
+if not sign_changes.empty:
+    zero_gamma_strike = float(sign_changes['strike'].iloc[0])
+else:
+    # Upgrade: If no zero-crossing exists, find the strike closest to neutral 0
+    closest_idx = agg_df_sorted['cumulative_GEX'].abs().idxmin()
+    zero_gamma_strike = float(agg_df_sorted.loc[closest_idx, 'strike'])
 
 lower_bound = current_price * (1.0 - zoom_pct)
 upper_bound = current_price * (1.0 + zoom_pct)
-
-filtered_df = agg_df_sorted[(agg_df_sorted['strike'] >= lower_bound) & (agg_df_sorted['strike'] <= upper_bound)].copy()
-
-total_gex_dollar = data_matrix['GEX'].sum()
-total_gex_shares = total_gex_dollar / price_key
-
-pct_from_flip = (abs(current_price - zero_gamma_strike) / current_price)
-is_approaching_zero = pct_from_flip <= 0.01
 
 # --- SCOREBOARD METRICS ROW ---
 col1, col2, col3, col4, col5, col6 = st.columns(6)
